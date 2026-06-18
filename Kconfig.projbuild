@@ -1,0 +1,25 @@
+menu "Prototype Configuration"
+
+    config PROTOTYPE_PHASE_D_ROTATION
+        bool "Phase D: Enable station rotation after 60s each"
+        default n
+        help
+            Automatically cycles through all test stations every 60 seconds.
+            Validates hot station switching (pipeline_change_station) and
+            confirms A2DP connection survives the switch.
+            Leave disabled for Phase C endurance tests (fixed station).
+
+    config PROTOTYPE_WIFI_SSID
+        string "WiFi SSID"
+        default "YourHotspotSSID"
+        help
+            SSID of the hotspot used during testing.
+            Overridden by WIFI_SSID in station_config.h.
+
+    config PROTOTYPE_WIFI_PASS
+        string "WiFi Password"
+        default "YourHotspotPassword"
+        help
+            Password for the test hotspot.
+
+endmenu
