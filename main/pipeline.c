@@ -199,8 +199,10 @@ esp_err_t pipeline_start(const char *url)
     pipeline_codec_t new_codec = detect_codec_from_url(url);
     if (new_codec != s_current_codec) {
         ESP_LOGI(TAG, "Codec change detected: %d -> %d", s_current_codec, new_codec);
-        /* Will be handled in pipeline_change_station logic */
-        s_current_codec = new_codec;
+        esp_err_t ret = pipeline_recreate_decoder(new_codec);
+        if (ret != ESP_OK) {
+            return ret;
+        }
     }
 
     audio_element_set_uri(s_http_el, url);
@@ -226,7 +228,8 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
         return ESP_FAIL;
     }
 
-    /* Keep reference to old decoder for rollback on failure */
+    /* Keep reference to old decoder for potential rollback.
+     * Do NOT deinit old_decoder until new one is fully linked. */
     audio_element_handle_t old_decoder = s_decoder_el;
 
     /* Stop pipeline to safely swap decoder */
@@ -236,19 +239,20 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
     /* Unlink pipeline before swapping elements */
     audio_pipeline_unlink(s_pipeline);
 
-    /* Unregister old decoder, register new one */
+    /* Unregister old decoder (but don't deinit yet - keep for rollback) */
     audio_pipeline_unregister(s_pipeline, s_decoder_el);
-    audio_element_deinit(s_decoder_el);
     s_decoder_el = new_decoder;
     esp_err_t ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register new decoder: %d", ret);
-        /* Rollback: restore old decoder */
+        /* Rollback: restore old decoder (still valid, not deinit'd) */
         s_decoder_el = old_decoder;
         audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
         const char *link_tag[] = {"http", "dec", "pass", "bt"};
         audio_pipeline_link(s_pipeline, link_tag, 4);
         audio_pipeline_change_state(s_pipeline, AEL_STATE_RUNNING);
+        /* Now safe to deinit failed new decoder */
+        audio_element_deinit(new_decoder);
         return ret;
     }
 
@@ -256,16 +260,21 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
     ret = audio_pipeline_link(s_pipeline, link_tag, 4);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to relink pipeline after decoder swap: %d", ret);
-        /* Rollback: restore old decoder */
+        /* Rollback: restore old decoder (still valid, not deinit'd) */
         s_decoder_el = old_decoder;
         audio_pipeline_unregister(s_pipeline, new_decoder);
-        audio_element_deinit(new_decoder);
         audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
         audio_pipeline_link(s_pipeline, link_tag, 4);
         audio_pipeline_change_state(s_pipeline, AEL_STATE_RUNNING);
+        /* Now safe to deinit failed new decoder */
+        audio_element_deinit(new_decoder);
+        /* Now safe to deinit old decoder (replaced) */
+        audio_element_deinit(old_decoder);
         return ret;
     }
 
+    /* Success: new decoder is linked. Now safe to deinit old decoder. */
+    audio_element_deinit(old_decoder);
     s_current_codec = new_codec;
     ESP_LOGI(TAG, "Decoder recreated for codec %d", new_codec);
     return ESP_OK;

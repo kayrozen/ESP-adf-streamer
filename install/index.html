@@ -626,12 +626,9 @@ async function provision() {
     await port.open({ baudRate: 115200 });
 
     const textDecoder = new TextDecoderStream();
-    const textEncoder = new TextEncoderStream();
     const readable = port.readable.pipeThrough(textDecoder);
-    const writable = textEncoder.readable.pipeTo(port.writable);
-
     reader = readable.getReader();
-    writer = writable.getWriter();
+    writer = port.writable.getWriter();
     keepReading = true;
 
     logProvision("info", "Port série ouvert (115200 baud)");
@@ -647,7 +644,7 @@ async function provision() {
     const config = { ssid, pass, btmac: mac };
     const cmd = "PROVISION:" + JSON.stringify(config) + "\n";
     logProvision("sent", cmd.trim());
-    await writer.write(cmd);
+    await writer.write(new TextEncoder().encode(cmd));
 
     // Wait for response
     statusEl.textContent = "Configuration envoyée, attente réponse...";

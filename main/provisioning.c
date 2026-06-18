@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -15,7 +16,7 @@
 static const char *TAG = "provision";
 
 #define UART_PORT_NUM      UART_NUM_0
-#define UART_BUF_SIZE      (1024)
+#define UART_BUF_SIZE      (8192)  // Increased from 1024 to handle larger JSON payloads
 #define PROVISION_CMD_PREFIX "PROVISION:"
 #define PROVISION_CMD_PREFIX_LEN (sizeof(PROVISION_CMD_PREFIX) - 1)
 
@@ -200,13 +201,22 @@ esp_err_t provisioning_start(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, UART_BUF_SIZE * 2,
-                                        UART_BUF_SIZE * 2, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
+    esp_err_t ret = uart_driver_install(UART_PORT_NUM, UART_BUF_SIZE * 2,
+                                        UART_BUF_SIZE * 2, 0, NULL, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "uart_driver_install failed: %d", ret);
+        return ret;
+    }
+    ret = uart_param_config(UART_PORT_NUM, &uart_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "uart_param_config failed: %d", ret);
+        uart_driver_delete(UART_PORT_NUM);
+        return ret;
+    }
 
     s_provision_running = true;
-    BaseType_t ret = xTaskCreate(provision_task, "provision", 4096, NULL, 10, &s_provision_task);
-    if (ret != pdPASS) {
+    BaseType_t task_ret = xTaskCreate(provision_task, "provision", 4096, NULL, 10, &s_provision_task);
+    if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create provisioning task");
         s_provision_running = false;
         uart_driver_delete(UART_PORT_NUM);

@@ -98,7 +98,8 @@ static void rotation_task(void *arg)
     ESP_LOGI(TAG, "Phase D rotation task started");
     vTaskDelay(pdMS_TO_TICKS(60 * 1000));  // Initial delay before first rotation
 
-    for (int i = 0; i < NUM_TEST_STATIONS; i++) {
+    /* Start from index 1 since index 0 is already playing at startup */
+    for (int i = 1; i < NUM_TEST_STATIONS; i++) {
         switch_to_station(i);
 
         passthrough_stats_t stats;
