@@ -180,8 +180,10 @@ esp_err_t bt_manager_init(const char *device_name)
     esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
     ESP_ERROR_CHECK(esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(iocap)));
 
-    /* Legacy PIN fallback for older speakers that use PIN-based pairing */
-    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, (uint8_t *)"0000");
+    /* Legacy PIN fallback for older speakers that use PIN-based pairing.
+     * esp_bt_pin_code_t is uint8_t[16]; must pass a properly-sized array. */
+    esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
+    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin);
 
     /* AVRC must be initialized before A2DP — many speakers check for AVRC
      * in our SDP record and refuse the A2DP connection if it's missing. */

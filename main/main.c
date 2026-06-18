@@ -117,16 +117,26 @@ static void run_event_loop(void)
 
         /* A2DP stall detection — retry if no PCM bytes flow for 20 s */
         {
-            passthrough_stats_t ps;
-            passthrough_el_get_stats(pipeline_get_passthrough_el(), &ps);
-            if (ps.bytes_passed != stall_last_bytes) {
-                stall_last_bytes = ps.bytes_passed;
-                stall_since_us   = esp_timer_get_time();
-            } else if ((esp_timer_get_time() - stall_since_us) > 20LL * 1000000) {
-                ESP_LOGW(TAG, "No PCM bytes for 20 s — retrying A2DP + pipeline");
-                stall_since_us = esp_timer_get_time();  /* reset cooldown */
-                bt_manager_reconnect_a2dp();
-                pipeline_change_station(TEST_STATIONS[s_current_station].url);
+            audio_element_handle_t pass_el = pipeline_get_passthrough_el();
+            if (pass_el != NULL) {
+                if (audio_element_get_state(pass_el) == AEL_STATE_RUNNING) {
+                    passthrough_stats_t ps = {0};
+                    passthrough_el_get_stats(pass_el, &ps);
+                    if (ps.bytes_passed != stall_last_bytes) {
+                        stall_last_bytes = ps.bytes_passed;
+                        stall_since_us   = esp_timer_get_time();
+                    } else if ((esp_timer_get_time() - stall_since_us) > 20LL * 1000000) {
+                        ESP_LOGW(TAG, "No PCM bytes for 20 s — retrying A2DP + pipeline");
+                        stall_since_us   = esp_timer_get_time();
+                        stall_last_bytes = 0;
+                        bt_manager_reconnect_a2dp();
+                        pipeline_change_station(TEST_STATIONS[s_current_station].url);
+                    }
+                } else {
+                    /* Reset stall timer when pipeline is not actively running */
+                    stall_since_us   = esp_timer_get_time();
+                    stall_last_bytes = 0;
+                }
             }
         }
 
