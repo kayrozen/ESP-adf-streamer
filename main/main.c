@@ -128,16 +128,17 @@ static void run_event_loop(void)
                     } else if ((esp_timer_get_time() - stall_since_us) > 20LL * 1000000) {
                         stall_since_us   = esp_timer_get_time();
                         stall_last_bytes = 0;
-                        if (!bt_manager_is_a2dp_connected()) {
-                            ESP_LOGW(TAG, "No PCM bytes for 20 s (A2DP disconnected) — retrying A2DP");
-                            esp_err_t err = bt_manager_reconnect_a2dp();
-                            if (err != ESP_OK) {
-                                ESP_LOGE(TAG, "Failed to reconnect A2DP: %d", err);
-                            }
+                        if (bt_manager_is_a2dp_connected()) {
+                            /* A2DP up but PCM stalled — network or decode deadlock.
+                             * Restart the pipeline to recover the stream. */
+                            ESP_LOGW(TAG, "No PCM for 20 s (A2DP connected) — restarting pipeline");
+                            pipeline_change_station(TEST_STATIONS[s_current_station].url);
                         } else {
-                            ESP_LOGW(TAG, "No PCM bytes for 20 s (A2DP connected) — restarting pipeline");
+                            /* A2DP not yet connected — a2dp_stream retries internally.
+                             * Calling esp_a2d_source_connect() here races with the
+                             * stream element's own retry and exhausts BT OSI timers. */
+                            ESP_LOGW(TAG, "No PCM for 20 s (A2DP disconnected) — awaiting BT reconnect");
                         }
-                        pipeline_change_station(TEST_STATIONS[s_current_station].url);
                     }
                 } else {
                     /* Reset stall timer when pipeline is not actively running */
