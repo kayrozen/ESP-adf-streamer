@@ -12,6 +12,7 @@ set(COMPONENT_SRCS
     "pipeline.c"
     "monitor.c"
     "passthrough_el.c"
+    "config_manager.c"
 )
 
 set(COMPONENT_ADD_INCLUDEDIRS .)

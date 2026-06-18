@@ -102,6 +102,61 @@
       font-size: 0.85em;
     }
 
+    /* Config form */
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .field label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .field input {
+      background: #111113;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      padding: 0.55rem 0.75rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .field input:focus {
+      border-color: var(--accent);
+    }
+
+    .field input::placeholder {
+      color: #55555a;
+    }
+
+    .field .hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .field input.invalid {
+      border-color: #c43030;
+    }
+
+    .field .err {
+      font-size: 0.75rem;
+      color: #e05050;
+      display: none;
+    }
+
+    .field.has-error .err { display: block; }
+    .field.has-error input { border-color: #c43030; }
+
+    /* Install section */
     .install-wrap {
       display: flex;
       flex-direction: column;
@@ -114,7 +169,6 @@
       --esp-tools-button-text-color: #fff;
     }
 
-    /* Style the default button slot */
     esp-web-install-button::part(button) {
       background: var(--accent);
       color: #fff;
@@ -142,6 +196,22 @@
     }
 
     .warning strong { color: #f0c030; }
+
+    .config-status {
+      font-size: 0.82rem;
+      padding: 0.5rem 0.8rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #111113;
+      color: var(--muted);
+      width: 100%;
+    }
+
+    .config-status.ready {
+      border-color: #2a4a2a;
+      background: #0d1f0d;
+      color: #5cba5c;
+    }
 
     .footer {
       margin-top: 2rem;
@@ -197,22 +267,46 @@
       </ol>
     </div>
 
+    <!-- Config card -->
+    <div class="card">
+      <h2>Configuration</h2>
+      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1rem;">
+        Ces paramètres sont écrits dans la partition NVS de l'ESP32 au moment du flash.
+        Laissez vide pour utiliser les valeurs compilées par défaut.
+      </p>
+
+      <div class="field" id="f-ssid">
+        <label for="inp-ssid">WiFi SSID</label>
+        <input id="inp-ssid" type="text" placeholder="MonReseau" autocomplete="off" spellcheck="false" />
+        <span class="err">SSID requis si un mot de passe est fourni.</span>
+      </div>
+
+      <div class="field" id="f-pass">
+        <label for="inp-pass">WiFi Password</label>
+        <input id="inp-pass" type="password" placeholder="••••••••" autocomplete="new-password" />
+      </div>
+
+      <div class="field" id="f-mac">
+        <label for="inp-mac">Adresse MAC Bluetooth (A2DP sink)</label>
+        <input id="inp-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"
+               pattern="^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$" spellcheck="false" maxlength="17" />
+        <span class="hint">Format : XX:XX:XX:XX:XX:XX — laisser vide pour scan automatique</span>
+        <span class="err">Format invalide. Exemple : A4:C1:38:01:02:03</span>
+      </div>
+
+      <div id="config-status" class="config-status">
+        Entrez votre configuration ci-dessus ou laissez vide pour utiliser les défauts compilés.
+      </div>
+    </div>
+
     <!-- Flash card -->
     <div class="card">
       <h2>Flash</h2>
       <div class="install-wrap">
         <div class="chip-tag">ESP32 · 16 MB Flash · 8 MB PSRAM</div>
 
-        <esp-web-install-button manifest="manifest.json">
-          <!-- Customize slot buttons if needed -->
+        <esp-web-install-button id="install-btn" manifest="manifest.json">
         </esp-web-install-button>
-
-        <div class="warning">
-          <strong>Note prototype :</strong> les credentials WiFi (<code>WIFI_SSID</code>,
-          <code>WIFI_PASS</code>) et l'adresse Bluetooth (<code>BT_PEER_ADDR</code>)
-          sont compilés dans le firmware via <code>station_config.h</code>.
-          Ce firmware de prototype ne contient pas de portail de configuration.
-        </div>
       </div>
     </div>
 
@@ -234,5 +328,305 @@
       </a>
     </footer>
   </main>
+
+<script>
+// ─── NVS binary generator ────────────────────────────────────────────────────
+// Generates a 4096-byte ESP NVS page (v2 format) containing a "preset"
+// namespace with string entries: ssid, pass, btmac.
+// Reference: esp-idf/components/nvs_flash/src/nvs_page.cpp
+
+const NVS_PAGE_SIZE    = 4096;
+const NVS_ENTRY_SIZE   = 32;
+const NVS_HEADER_SIZE  = 32;
+const NVS_BITMAP_SIZE  = 32;
+const NVS_ENTRY_COUNT  = 126;  // (4096 - 32 - 32) / 32
+
+/* CRC32 (IEEE 802.3, reflected polynomial) */
+function makeCrcTable() {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+}
+const CRC_TABLE = makeCrcTable();
+
+function crc32(buf, init = 0xFFFFFFFF) {
+  let c = init;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function buildNvsPage(entries) {
+  // entries: [{key, value}]  — key max 15 chars, value is a string
+  // Returns Uint8Array(4096) or null if no entries.
+
+  if (entries.length === 0) return null;
+
+  const page = new Uint8Array(NVS_PAGE_SIZE).fill(0xFF);
+  const view = new DataView(page.buffer);
+
+  // ── Slot index tracking ──
+  let slot = 0;  // current entry index (0-125)
+
+  function markBitmapWritten(idx) {
+    // 2 bits per entry, stored LSB-first in the 32-byte bitmap at offset 32.
+    // WRITTEN = 0b10 → set bit[2*idx] = 0 (was 1), leave bit[2*idx+1] = 1
+    const byteIdx = Math.floor(idx / 4);
+    const bitOff  = (idx % 4) * 2;
+    const bmOff   = NVS_HEADER_SIZE + byteIdx;
+    page[bmOff] &= ~(1 << bitOff);   // clear the lower bit → WRITTEN (0b10)
+  }
+
+  function writeEntry(idx, entryBytes) {
+    const off = NVS_HEADER_SIZE + NVS_BITMAP_SIZE + idx * NVS_ENTRY_SIZE;
+    for (let i = 0; i < NVS_ENTRY_SIZE; i++) page[off + i] = entryBytes[i];
+    markBitmapWritten(idx);
+  }
+
+  function entryChecksum(entryBytes) {
+    // CRC covers bytes [0-3] and [8-31] (28 bytes total); bytes [4-7] hold the CRC.
+    const part = new Uint8Array(28);
+    part.set(entryBytes.subarray(0, 4), 0);
+    part.set(entryBytes.subarray(8, 32), 4);
+    return crc32(part);
+  }
+
+  function buildNamespaceEntry(nsIndex) {
+    // Type=U8 (0x01), span=1, chunk_index=0xFF (not used for primitives)
+    const e = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
+    e[0] = 0;           // ns_index = 0 for the namespace entry itself
+    e[1] = 0x01;        // type = U8
+    e[2] = 1;           // span = 1
+    e[3] = 0xFF;        // chunk_index unused
+    // key (bytes 8-23, null-terminated, max 15 chars)
+    const keyBytes = new TextEncoder().encode("preset");
+    e.set(keyBytes, 8);
+    // value = namespace index (byte 24)
+    e[24] = nsIndex;
+    // CRC
+    const crc = entryChecksum(e);
+    new DataView(e.buffer).setUint32(4, crc, true);
+    return e;
+  }
+
+  function buildStringEntries(nsIndex, key, value) {
+    // Type=SZ (0x21). String > 8 bytes uses BLOB_DATA chunks (type 0x42/0x48).
+    // For simplicity we always use SZ with multi-span.
+    const enc = new TextEncoder().encode(value + "\0");  // null-terminated
+    const dataLen  = enc.length;
+    const span     = 1 + Math.ceil(dataLen / (NVS_ENTRY_SIZE - 8));
+    // Actually: first entry header holds key + up to 8 bytes of data (bytes 24-31)
+    // Continuation entries hold 32 bytes of data each.
+    // Simpler correct layout: all data starting at byte 24 of first entry.
+    // Total data capacity = (span * 32) - 24; if dataLen fits, use span entries.
+    const neededSpan = 1 + Math.ceil(Math.max(0, dataLen - 8) / NVS_ENTRY_SIZE);
+    const totalSlots = neededSpan;
+
+    const entries = [];
+    // First entry
+    const first = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
+    first[0] = nsIndex;         // namespace index
+    first[1] = 0x21;            // type SZ (string)
+    first[2] = totalSlots;      // span
+    first[3] = 0xFF;            // chunk index (not used for SZ < page)
+    const keyB = new TextEncoder().encode(key.substring(0, 15));
+    first.set(keyB, 8);         // key at bytes 8-23
+    // data size at bytes 24-25 (little-endian)
+    new DataView(first.buffer).setUint16(24, dataLen, true);
+    // first 8 bytes of data at bytes 24..31 actually: layout is
+    // [0]=ns [1]=type [2]=span [3]=chunkidx [4-7]=crc [8-23]=key [24-31]=value_start
+    // So first 8 bytes of actual value go at offset 24 (after the key).
+    // Wait — for SZ: the value starts at byte 24 in the FIRST entry.
+    // But we need to store the data_size somewhere. In NVS, it's stored as the
+    // first 2 bytes of the value region (bytes 24-25), then data follows at byte 26.
+    // Let's follow the actual IDF layout:
+    //   bytes 0: ns_index
+    //   bytes 1: type
+    //   bytes 2: span
+    //   bytes 3: chunk_index
+    //   bytes 4-7: crc32
+    //   bytes 8-23: key (null padded)
+    //   bytes 24-25: data size (uint16 LE) for variable-length types
+    //   bytes 26-31: first 6 bytes of data
+    // Continuation entries: bytes 0-31 = data bytes 6+(32*n-6) through 6+(32*(n+1)-6)-1
+
+    // Re-zero and rewrite
+    first.fill(0xFF);
+    first[0] = nsIndex;
+    first[1] = 0x21;
+    first[2] = totalSlots;
+    first[3] = 0xFF;
+    first.set(keyB, 8);
+    new DataView(first.buffer).setUint16(24, dataLen, true);
+    // First 6 bytes of value data at offset 26
+    const chunk0 = enc.subarray(0, 6);
+    first.set(chunk0, 26);
+    const crc0 = entryChecksum(first);
+    new DataView(first.buffer).setUint32(4, crc0, true);
+    entries.push(first);
+
+    // Continuation entries
+    let dataOff = 6;
+    for (let ci = 1; ci < totalSlots; ci++) {
+      const cont = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
+      const chunk = enc.subarray(dataOff, dataOff + NVS_ENTRY_SIZE);
+      cont.set(chunk, 0);
+      // Continuation entries don't have a separate CRC in the entry header —
+      // they are covered by the first entry's CRC over the data.
+      // But markBitmapWritten still marks them as written.
+      entries.push(cont);
+      dataOff += NVS_ENTRY_SIZE;
+    }
+
+    return entries;
+  }
+
+  // ── Write entries ──
+  const NS_IDX = 1;  // namespace index we assign to "preset"
+
+  // 1. Namespace entry
+  writeEntry(slot++, buildNamespaceEntry(NS_IDX));
+
+  // 2. String entries
+  for (const { key, value } of entries) {
+    const parts = buildStringEntries(NS_IDX, key, value);
+    for (const part of parts) {
+      if (slot >= NVS_ENTRY_COUNT) break;
+      writeEntry(slot++, part);
+    }
+  }
+
+  // ── Page header (32 bytes) ──
+  // State = ACTIVE (0xFFFFFFFE), seq_no = 0 (first page), version = 0xFE
+  view.setUint32(0, 0xFFFFFFFE, true);   // state
+  view.setUint32(4, 0, true);            // seq_no
+  view.setUint32(8, 0xFFFFFF00 | 0xFE, true);  // version 0xFE in byte 8
+  // bytes 12-27: unused (0xFF)
+  // CRC at bytes 28-31: covers bytes 0-27
+  const headerForCrc = page.subarray(0, 28);
+  const hdrCrc = crc32(headerForCrc);
+  view.setUint32(28, hdrCrc, true);
+
+  return page;
+}
+
+// ─── Manifest + blob URL management ──────────────────────────────────────────
+
+let s_nvsBlobUrl  = null;
+let s_manifestUrl = null;
+
+function revokeBlobUrls() {
+  if (s_nvsBlobUrl)  { URL.revokeObjectURL(s_nvsBlobUrl);  s_nvsBlobUrl  = null; }
+  if (s_manifestUrl) { URL.revokeObjectURL(s_manifestUrl); s_manifestUrl = null; }
+}
+
+async function fetchBaseManifest() {
+  try {
+    const r = await fetch("manifest.json");
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function updateManifest() {
+  const ssid = document.getElementById("inp-ssid").value.trim();
+  const pass = document.getElementById("inp-pass").value;
+  const mac  = document.getElementById("inp-mac").value.trim();
+
+  const statusEl = document.getElementById("config-status");
+  const installBtn = document.getElementById("install-btn");
+
+  // Validation
+  const fSsid = document.getElementById("f-ssid");
+  const fMac  = document.getElementById("f-mac");
+  fSsid.classList.remove("has-error");
+  fMac.classList.remove("has-error");
+
+  if (pass && !ssid) {
+    fSsid.classList.add("has-error");
+    statusEl.className = "config-status";
+    statusEl.textContent = "Erreur : SSID requis si un mot de passe est fourni.";
+    return;
+  }
+
+  const macRe = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
+  if (mac && !macRe.test(mac)) {
+    fMac.classList.add("has-error");
+    statusEl.className = "config-status";
+    statusEl.textContent = "Erreur : format MAC invalide.";
+    return;
+  }
+
+  revokeBlobUrls();
+
+  const nvsEntries = [];
+  if (ssid) nvsEntries.push({ key: "ssid",  value: ssid });
+  if (pass) nvsEntries.push({ key: "pass",  value: pass });
+  if (mac)  nvsEntries.push({ key: "btmac", value: mac  });
+
+  const baseManifest = await fetchBaseManifest();
+  if (!baseManifest) {
+    statusEl.className = "config-status";
+    statusEl.textContent = "Impossible de charger manifest.json — vérifiez le déploiement.";
+    return;
+  }
+
+  let manifestToUse;
+
+  if (nvsEntries.length === 0) {
+    // No config — use base manifest directly
+    installBtn.setAttribute("manifest", "manifest.json");
+    statusEl.className = "config-status";
+    statusEl.textContent = "Aucune configuration saisie — les défauts compilés seront utilisés.";
+    return;
+  }
+
+  // Build NVS blob
+  const nvsPage = buildNvsPage(nvsEntries);
+  const nvsBlob = new Blob([nvsPage], { type: "application/octet-stream" });
+  s_nvsBlobUrl  = URL.createObjectURL(nvsBlob);
+
+  // Clone manifest and inject NVS part at 0x9000 = 36864
+  manifestToUse = JSON.parse(JSON.stringify(baseManifest));
+  for (const build of manifestToUse.builds) {
+    // Remove any existing NVS part then prepend ours
+    build.parts = build.parts.filter(p => p.offset !== 36864);
+    build.parts.unshift({ path: s_nvsBlobUrl, offset: 36864 });
+  }
+
+  const manifestBlob = new Blob([JSON.stringify(manifestToUse)], { type: "application/json" });
+  s_manifestUrl = URL.createObjectURL(manifestBlob);
+  installBtn.setAttribute("manifest", s_manifestUrl);
+
+  const parts = [];
+  if (ssid)  parts.push(`SSID: ${ssid}`);
+  if (mac)   parts.push(`BT: ${mac}`);
+  statusEl.className = "config-status ready";
+  statusEl.textContent = "Prêt : " + parts.join(" · ") + " — le firmware incluera cette config NVS.";
+}
+
+// Debounced update
+let debounceTimer;
+function onInput() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(updateManifest, 400);
+}
+
+document.getElementById("inp-ssid").addEventListener("input", onInput);
+document.getElementById("inp-pass").addEventListener("input", onInput);
+document.getElementById("inp-mac").addEventListener("input", onInput);
+
+// Format MAC as user types (insert colons automatically)
+document.getElementById("inp-mac").addEventListener("keydown", function(e) {
+  const v = this.value;
+  if (e.key !== "Backspace" && v.length > 0 && v.length % 3 === 2 && !v.endsWith(":")) {
+    this.value = v + ":";
+  }
+});
+</script>
 </body>
 </html>

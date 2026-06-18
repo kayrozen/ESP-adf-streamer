@@ -15,6 +15,7 @@
 #include "monitor.h"
 #include "passthrough_el.h"
 #include "station_config.h"
+#include "config_manager.h"
 
 static const char *TAG = "app_main";
 
@@ -99,6 +100,9 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* ---- Runtime config (NVS "preset" namespace, fallback to station_config.h) ---- */
+    ESP_ERROR_CHECK(config_manager_init());
+
     /* ---- Boot heap report (Phase A.1 validation) ---- */
     ESP_LOGI(TAG, "=== ESP-ADF Streamer prototype ===");
     ESP_LOGI(TAG, "Heap at boot: internal=%"PRIu32"B  SPIRAM=%"PRIu32"B",
@@ -113,7 +117,7 @@ void app_main(void)
 
     /* ---- Phase A.3: WiFi ---- */
     ESP_ERROR_CHECK(wifi_manager_init());
-    ret = wifi_manager_connect(WIFI_SSID, WIFI_PASS);
+    ret = wifi_manager_connect(config_get_wifi_ssid(), config_get_wifi_pass());
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "WiFi connect failed — continuing anyway (offline test)");
     }
@@ -121,8 +125,7 @@ void app_main(void)
     /* ---- Phase A.2: Bluetooth ---- */
     ESP_ERROR_CHECK(bt_manager_init(BT_DEVICE_NAME));
 
-    uint8_t configured_bda[] = BT_PEER_ADDR;
-    ret = bt_manager_find_peer(configured_bda, 30);
+    ret = bt_manager_find_peer(config_get_bt_mac(), 30);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "No BT peer found — cannot start A2DP");
         ESP_LOGE(TAG, "Set BT_PEER_ADDR in station_config.h or enable a discoverable A2DP sink");
@@ -131,7 +134,7 @@ void app_main(void)
     }
 
     /* ---- Phase B / C: Pipeline init ---- */
-    ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));
+    ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));  /* uses discovered/configured BDA */
 
     /* ---- Phase C: Resource monitoring ---- */
     monitor_start();
