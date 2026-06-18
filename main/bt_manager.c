@@ -81,7 +81,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
     case ESP_BT_GAP_AUTH_CMPL_EVT:
         if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
             ESP_LOGI(TAG, "Auth OK with: %s",
-                     param->auth_cmpl.device_name ? param->auth_cmpl.device_name : "unknown");
+                     param->auth_cmpl.device_name ? (char *)param->auth_cmpl.device_name : "unknown");
         } else {
             ESP_LOGW(TAG, "Auth failed: %d", param->auth_cmpl.stat);
         }
