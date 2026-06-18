@@ -28,11 +28,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGW(TAG, "Disconnected (reason %d) — reconnecting…", ev->reason);
         esp_wifi_connect();
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        ESP_LOGI(TAG, "WiFi connected to AP");
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_AUTHMODE_CHANGE) {
+        wifi_event_sta_authmode_change_t *ev = data;
+        ESP_LOGW(TAG, "Auth mode change: old=%d new=%d", ev->old_mode, ev->new_mode);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         s_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
+        ESP_LOGW(TAG, "Lost IP address");
+        s_connected = false;
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_BEACON_TIMEOUT) {
+        ESP_LOGW(TAG, "Beacon timeout");
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_AUTH_EXPIRE) {
+        ESP_LOGW(TAG, "Auth expired");
     }
 }
 

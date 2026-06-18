@@ -1,6 +1,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "audio_pipeline.h"
 #include "audio_element.h"
@@ -27,6 +28,12 @@ static audio_event_iface_handle_t s_evt         = NULL;
 /* Peer BDA cache */
 static uint8_t s_peer_bda[6] = {0};
 
+/* Decoder type tracking for dynamic selection */
+static pipeline_codec_t s_current_codec = PIPELINE_CODEC_AUTO;
+
+/* Mutex for protecting pipeline state during station changes */
+static SemaphoreHandle_t s_pipeline_mutex = NULL;
+
 /* ---- helpers ---- */
 
 static audio_element_handle_t create_http_stream(void)
@@ -47,15 +54,40 @@ static audio_element_handle_t create_mp3_decoder(void)
     return mp3_decoder_init(&cfg);
 }
 
-/* create_aac_decoder is used for Phase B step 2 (AAC Icecast test).
- * Suppress unused-function warning — it will be wired in when testing AAC. */
-static audio_element_handle_t create_aac_decoder(void) __attribute__((unused));
 static audio_element_handle_t create_aac_decoder(void)
 {
     aac_decoder_cfg_t cfg = DEFAULT_AAC_DECODER_CONFIG();
     cfg.task_core         = 0;
     cfg.task_prio         = 23;
     return aac_decoder_init(&cfg);
+}
+
+/* Create decoder based on codec type */
+static audio_element_handle_t create_decoder(pipeline_codec_t codec)
+{
+    switch (codec) {
+        case PIPELINE_CODEC_AAC:
+            return create_aac_decoder();
+        case PIPELINE_CODEC_MP3:
+        case PIPELINE_CODEC_AUTO:
+        default:
+            return create_mp3_decoder();
+    }
+}
+
+/* Detect codec from URL */
+static pipeline_codec_t detect_codec_from_url(const char *url)
+{
+    if (!url) return PIPELINE_CODEC_MP3;
+    
+    if (strstr(url, ".aac") || strstr(url, "AAC") || strstr(url, "aac")) {
+        return PIPELINE_CODEC_AAC;
+    }
+    if (strstr(url, ".m3u8") || strstr(url, "hls") || strstr(url, "HLS")) {
+        /* HLS typically uses AAC */
+        return PIPELINE_CODEC_AAC;
+    }
+    return PIPELINE_CODEC_MP3;
 }
 
 static audio_element_handle_t create_a2dp_stream(void)
@@ -76,6 +108,14 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
 {
     memcpy(s_peer_bda, peer_bda, 6);
 
+    if (!s_pipeline_mutex) {
+        s_pipeline_mutex = xSemaphoreCreateMutex();
+        if (!s_pipeline_mutex) {
+            ESP_LOGE(TAG, "Failed to create pipeline mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     s_pipeline = audio_pipeline_init(&pipeline_cfg);
     if (!s_pipeline) {
@@ -84,7 +124,7 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     }
 
     s_http_el     = create_http_stream();
-    s_decoder_el  = create_mp3_decoder();
+    s_decoder_el  = create_decoder(PIPELINE_CODEC_MP3);  /* default, will be updated on first stream */
     s_passthrough = passthrough_el_init();
     s_a2dp_el     = create_a2dp_stream();
 
@@ -118,6 +158,7 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
              s_peer_bda[2], s_peer_bda[1], s_peer_bda[0]);
     esp_a2d_source_connect(s_peer_bda);
 
+    s_current_codec = PIPELINE_CODEC_MP3;
     ESP_LOGI(TAG, "Pipeline initialized");
     return ESP_OK;
 }
@@ -126,8 +167,16 @@ esp_err_t pipeline_start(const char *url)
 {
     if (!s_pipeline || !url) return ESP_ERR_INVALID_STATE;
 
+    /* Detect codec from URL and switch decoder if needed */
+    pipeline_codec_t new_codec = detect_codec_from_url(url);
+    if (new_codec != s_current_codec) {
+        ESP_LOGI(TAG, "Codec change detected: %d -> %d", s_current_codec, new_codec);
+        /* Will be handled in pipeline_change_station logic */
+        s_current_codec = new_codec;
+    }
+
     audio_element_set_uri(s_http_el, url);
-    ESP_LOGI(TAG, "Starting pipeline → %s", url);
+    ESP_LOGI(TAG, "Starting pipeline -> %s", url);
 
     esp_err_t ret = audio_pipeline_run(s_pipeline);
     if (ret != ESP_OK) {
@@ -136,11 +185,56 @@ esp_err_t pipeline_start(const char *url)
     return ret;
 }
 
+/* Recreate decoder element for new codec type */
+static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
+{
+    if (new_codec == s_current_codec) {
+        return ESP_OK;  /* No change needed */
+    }
+
+    audio_element_handle_t new_decoder = create_decoder(new_codec);
+    if (!new_decoder) {
+        ESP_LOGE(TAG, "Failed to create new decoder for codec %d", new_codec);
+        return ESP_FAIL;
+    }
+
+    /* Stop pipeline to safely swap decoder */
+    audio_pipeline_stop(s_pipeline);
+    audio_pipeline_wait_for_stop(s_pipeline);
+
+    /* Unregister old decoder, register new one */
+    audio_pipeline_unregister(s_pipeline, s_decoder_el);
+    audio_element_deinit(s_decoder_el);
+    s_decoder_el = new_decoder;
+    audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
+    
+    const char *link_tag[] = {"http", "dec", "pass", "bt"};
+    audio_pipeline_link(s_pipeline, link_tag, 4);
+
+    s_current_codec = new_codec;
+    ESP_LOGI(TAG, "Decoder recreated for codec %d", new_codec);
+    return ESP_OK;
+}
+
 esp_err_t pipeline_change_station(const char *new_url)
 {
     if (!s_pipeline || !new_url) return ESP_ERR_INVALID_STATE;
 
-    ESP_LOGI(TAG, "Changing station → %s", new_url);
+    /* Take mutex to prevent concurrent access with event loop */
+    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to take pipeline mutex for station change");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ESP_LOGI(TAG, "Changing station -> %s", new_url);
+
+    /* Detect codec and recreate decoder if needed */
+    pipeline_codec_t new_codec = detect_codec_from_url(new_url);
+    esp_err_t ret = pipeline_recreate_decoder(new_codec);
+    if (ret != ESP_OK) {
+        xSemaphoreGive(s_pipeline_mutex);
+        return ret;
+    }
 
     /* Stop the pipeline but keep elements initialized to preserve A2DP connection.
      * Do NOT call audio_pipeline_terminate() — that deinitializes all elements
@@ -153,7 +247,9 @@ esp_err_t pipeline_change_station(const char *new_url)
     audio_pipeline_reset_elements(s_pipeline);
     audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
 
-    return audio_pipeline_run(s_pipeline);
+    ret = audio_pipeline_run(s_pipeline);
+    xSemaphoreGive(s_pipeline_mutex);
+    return ret;
 }
 
 esp_err_t pipeline_stop(void)
@@ -182,7 +278,19 @@ void pipeline_deinit(void)
     audio_element_deinit(s_passthrough);
     audio_element_deinit(s_a2dp_el);
     audio_event_iface_destroy(s_evt);
+    
+    /* Clear all handles to avoid dangling pointers */
     s_pipeline = NULL;
+    s_http_el = NULL;
+    s_decoder_el = NULL;
+    s_passthrough = NULL;
+    s_a2dp_el = NULL;
+    s_evt = NULL;
+    
+    if (s_pipeline_mutex) {
+        vSemaphoreDelete(s_pipeline_mutex);
+        s_pipeline_mutex = NULL;
+    }
     ESP_LOGI(TAG, "Pipeline destroyed");
 }
 

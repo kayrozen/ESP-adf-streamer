@@ -181,17 +181,19 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Scanning for A2DP sinks (%" PRIu32 "s)…", timeout_s);
+    /* GAP discovery duration is limited to 30s by the API */
+    int discovery_duration_s = (timeout_s > 30) ? 30 : (int)timeout_s;
+    ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s)...", discovery_duration_s);
     ESP_ERROR_CHECK(esp_bt_gap_start_discovery(
         ESP_BT_INQ_MODE_GENERAL_INQUIRY,
-        (int)(timeout_s > 30 ? 30 : timeout_s),
+        discovery_duration_s,
         0));
 
     EventBits_t bits = xEventGroupWaitBits(s_bt_event_group,
                                            BT_FOUND_BIT, pdFALSE, pdFALSE,
-                                           pdMS_TO_TICKS(timeout_s * 1000));
+                                           pdMS_TO_TICKS(discovery_duration_s * 1000));
     if (!(bits & BT_FOUND_BIT)) {
-        ESP_LOGE(TAG, "No A2DP sink found within %" PRIu32 "s", timeout_s);
+        ESP_LOGE(TAG, "No A2DP sink found within %d s", discovery_duration_s);
         esp_bt_gap_cancel_discovery();  // Clean up discovery on timeout
         return ESP_ERR_NOT_FOUND;
     }

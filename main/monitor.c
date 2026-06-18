@@ -2,6 +2,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "monitor.h"
@@ -13,6 +14,7 @@ static const char *TAG = "monitor";
 
 static TaskHandle_t s_monitor_task = NULL;
 static volatile bool s_running     = false;
+static SemaphoreHandle_t s_monitor_mutex = NULL;
 
 static void monitor_task(void *arg)
 {
@@ -21,7 +23,7 @@ static void monitor_task(void *arg)
         stats_buf = malloc(STATS_BUF_SIZE);
     }
 
-    while (s_running) {
+    while (true) {
         /* Sleep for the interval, but wake immediately if notified by monitor_stop().
          * ulTaskNotifyTake returns > 0 when woken by a notification (stop signal). */
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MONITOR_INTERVAL_S * 1000)) > 0) {
@@ -49,14 +51,18 @@ static void monitor_task(void *arg)
     if (stats_buf) free(stats_buf);
     /* Clear handle inside the task so monitor_start() can't race with a
      * still-running task after monitor_stop() returns. */
+    xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
     s_monitor_task = NULL;
+    xSemaphoreGive(s_monitor_mutex);
     vTaskDelete(NULL);
 }
 
 void monitor_start(void)
 {
+    xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
     if (s_monitor_task) {
         ESP_LOGW(TAG, "Monitor already running");
+        xSemaphoreGive(s_monitor_mutex);
         return;
     }
     s_running = true;
@@ -66,19 +72,31 @@ void monitor_start(void)
         ESP_LOGE(TAG, "Failed to create monitor task");
         s_monitor_task = NULL;
         s_running = false;
-        return;
+    } else {
+        ESP_LOGI(TAG, "Monitoring started (interval %ds)", MONITOR_INTERVAL_S);
     }
-    ESP_LOGI(TAG, "Monitoring started (interval %ds)", MONITOR_INTERVAL_S);
+    xSemaphoreGive(s_monitor_mutex);
 }
 
 void monitor_stop(void)
 {
+    TaskHandle_t task = NULL;
+    xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
     if (!s_monitor_task) {
+        xSemaphoreGive(s_monitor_mutex);
         return;
     }
+    task = s_monitor_task;
     s_running = false;
-    TaskHandle_t task = s_monitor_task;
-    s_monitor_task = NULL;  // Prevent races with restart
-    xTaskNotifyGive(task);
-    /* Task clears its own handle before deleting itself */
+    xSemaphoreGive(s_monitor_mutex);
+
+    if (task) {
+        xTaskNotifyGive(task);
+    }
+    /* Task clears its own handle under mutex before deleting itself */
+}
+
+void monitor_init(void)
+{
+    s_monitor_mutex = xSemaphoreCreateMutex();
 }

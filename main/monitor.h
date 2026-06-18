@@ -15,5 +15,6 @@
 
 #define MONITOR_INTERVAL_S  30
 
+void monitor_init(void);
 void monitor_start(void);
 void monitor_stop(void);

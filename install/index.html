@@ -414,7 +414,7 @@ function buildNvsPage(entries) {
 
   function buildStringEntries(nsIndex, key, value) {
     // Type=SZ (0x21). String data layout in NVS:
-    // First entry:  bytes 0-7=header, 8-23=key, 24-25=data_size, 26-31=first 6 bytes of data
+    // First entry:  bytes 0-3=header, 8-23=key, 24-25=data_size, 26-31=first 6 bytes of data
     // Continuation entries: full 32 bytes of data each
     // Total capacity for given span: 6 + (span - 1) * 32 bytes
     // So: span = 1 + ceil(max(0, dataLen - 6) / 32)
@@ -424,7 +424,7 @@ function buildNvsPage(entries) {
     const totalSlots = neededSpan;
 
     const entries = [];
-    // First entry
+    // First entry - build without CRC first
     const first = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
     first[0] = nsIndex;         // namespace index
     first[1] = 0x21;            // type SZ (string)
@@ -434,36 +434,10 @@ function buildNvsPage(entries) {
     first.set(keyB, 8);         // key at bytes 8-23
     // data size at bytes 24-25 (little-endian)
     new DataView(first.buffer).setUint16(24, dataLen, true);
-    // first 8 bytes of data at bytes 24..31 actually: layout is
-    // [0]=ns [1]=type [2]=span [3]=chunkidx [4-7]=crc [8-23]=key [24-31]=value_start
-    // So first 8 bytes of actual value go at offset 24 (after the key).
-    // Wait — for SZ: the value starts at byte 24 in the FIRST entry.
-    // But we need to store the data_size somewhere. In NVS, it's stored as the
-    // first 2 bytes of the value region (bytes 24-25), then data follows at byte 26.
-    // Let's follow the actual IDF layout:
-    //   bytes 0: ns_index
-    //   bytes 1: type
-    //   bytes 2: span
-    //   bytes 3: chunk_index
-    //   bytes 4-7: crc32
-    //   bytes 8-23: key (null padded)
-    //   bytes 24-25: data size (uint16 LE) for variable-length types
-    //   bytes 26-31: first 6 bytes of data
-    // Continuation entries: bytes 0-31 = data bytes 6+(32*n-6) through 6+(32*(n+1)-6)-1
-
-    // Re-zero and rewrite
-    first.fill(0xFF);
-    first[0] = nsIndex;
-    first[1] = 0x21;
-    first[2] = totalSlots;
-    first[3] = 0xFF;
-    first.set(keyB, 8);
-    new DataView(first.buffer).setUint16(24, dataLen, true);
     // First 6 bytes of value data at offset 26
     const chunk0 = enc.subarray(0, 6);
     first.set(chunk0, 26);
-    const crc0 = entryChecksum(first);
-    new DataView(first.buffer).setUint32(4, crc0, true);
+
     entries.push(first);
 
     // Continuation entries
@@ -472,12 +446,26 @@ function buildNvsPage(entries) {
       const cont = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
       const chunk = enc.subarray(dataOff, dataOff + NVS_ENTRY_SIZE);
       cont.set(chunk, 0);
-      // Continuation entries don't have a separate CRC in the entry header —
-      // they are covered by the first entry's CRC over the data.
-      // But markBitmapWritten still marks them as written.
       entries.push(cont);
       dataOff += NVS_ENTRY_SIZE;
     }
+
+    // Now compute CRC for the first entry covering ALL data
+    // CRC covers: bytes [0-3] (ns, type, span, chunk_idx) + bytes [8-31] (key + data_size + first 6 bytes)
+    // PLUS all continuation entry data (32 bytes each)
+    const crcData = new Uint8Array(28 + (totalSlots - 1) * 32);
+    // First 4 bytes: ns, type, span, chunk_idx
+    crcData.set(first.subarray(0, 4), 0);
+    // Next 24 bytes: key (16 bytes) + data_size (2) + first 6 data bytes = 24 bytes
+    crcData.set(first.subarray(8, 32), 4);
+    // Continuation entry data
+    let crcOff = 28;
+    for (let ci = 1; ci < totalSlots; ci++) {
+      crcData.set(entries[ci].subarray(0, 32), crcOff);
+      crcOff += 32;
+    }
+    const crc = crc32(crcData);
+    new DataView(first.buffer).setUint32(4, crc, true);
 
     return entries;
   }

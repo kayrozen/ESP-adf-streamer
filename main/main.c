@@ -159,6 +159,7 @@ void app_main(void)
     ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));  /* uses discovered/configured BDA */
 
     /* ---- Phase C: Resource monitoring ---- */
+    monitor_init();
     monitor_start();
 
     /* ---- Phase B: Start first station (MP3 — simplest) ---- */
