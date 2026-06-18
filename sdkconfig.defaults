@@ -47,7 +47,9 @@ CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=32
 CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
 
-# Audio pipeline — allocate ring buffers in PSRAM
+# Audio pipeline — allow element task stacks to be allocated in PSRAM.
+# Without this, BT+WiFi exhaust internal DRAM and audio thread creation fails.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
 
 # Larger HTTP buffer for HLS segments

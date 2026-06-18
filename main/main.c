@@ -194,18 +194,6 @@ void app_main(void)
     monitor_init();
     monitor_start();
 
-    /* Wait for A2DP connection before starting the pipeline to avoid ring-buffer
-     * overflow while the BT sink is not yet accepting PCM data. */
-    ESP_LOGI(TAG, "Waiting for A2DP connection …");
-    int a2dp_wait_ms = 0;
-    while (!bt_manager_is_a2dp_connected() && a2dp_wait_ms < 10000) {
-        vTaskDelay(pdMS_TO_TICKS(200));
-        a2dp_wait_ms += 200;
-    }
-    if (!bt_manager_is_a2dp_connected()) {
-        ESP_LOGW(TAG, "A2DP not connected after 10 s — starting pipeline anyway");
-    }
-
     /* ---- Phase B: Start first station (MP3 — simplest) ---- */
     ESP_LOGI(TAG, "Starting Phase B — MP3 Icecast baseline test");
     int64_t t_start = esp_timer_get_time();
