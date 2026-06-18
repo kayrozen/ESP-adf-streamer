@@ -23,7 +23,13 @@ static esp_err_t passthrough_open(audio_element_handle_t el)
 static audio_element_err_t passthrough_process(audio_element_handle_t el,
                                                 char *in_buf, int in_len)
 {
+    if (!el || !in_buf) {
+        return AEL_IO_ABORT;
+    }
     passthrough_ctx_t *ctx = audio_element_getdata(el);
+    if (!ctx) {
+        return AEL_IO_ABORT;
+    }
 
     int bytes_read = audio_element_input(el, in_buf, in_len);
     if (bytes_read <= 0) {
@@ -45,7 +51,13 @@ static audio_element_err_t passthrough_process(audio_element_handle_t el,
 
 static esp_err_t passthrough_close(audio_element_handle_t el)
 {
+    if (!el) {
+        return ESP_ERR_INVALID_ARG;
+    }
     passthrough_ctx_t *ctx = audio_element_getdata(el);
+    if (!ctx) {
+        return ESP_OK;
+    }
     ESP_LOGI(TAG, "closed — total bytes: %"PRIu64", frames: %"PRIu32,
              ctx->stats.bytes_passed, ctx->stats.frames_passed);
     return ESP_OK;
@@ -53,7 +65,13 @@ static esp_err_t passthrough_close(audio_element_handle_t el)
 
 static esp_err_t passthrough_destroy(audio_element_handle_t el)
 {
+    if (!el) {
+        return ESP_ERR_INVALID_ARG;
+    }
     passthrough_ctx_t *ctx = audio_element_getdata(el);
+    if (!ctx) {
+        return ESP_OK;
+    }
     vSemaphoreDelete(ctx->mutex);
     free(ctx);
     return ESP_OK;

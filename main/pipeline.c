@@ -140,24 +140,24 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     }
 
     esp_err_t ret = audio_pipeline_register(s_pipeline, s_http_el, "http");
-    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register http failed: %d", ret); return ret; }
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register http failed: %d", ret); goto err_cleanup; }
     ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
-    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register dec failed: %d", ret); return ret; }
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register dec failed: %d", ret); goto err_cleanup; }
     ret = audio_pipeline_register(s_pipeline, s_passthrough, "pass");
-    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register pass failed: %d", ret); return ret; }
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register pass failed: %d", ret); goto err_cleanup; }
     ret = audio_pipeline_register(s_pipeline, s_a2dp_el, "bt");
-    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register bt failed: %d", ret); return ret; }
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register bt failed: %d", ret); goto err_cleanup; }
 
     const char *link_tag[] = {"http", "dec", "pass", "bt"};
     ret = audio_pipeline_link(s_pipeline, link_tag, 4);
-    if (ret != ESP_OK) { ESP_LOGE(TAG, "Pipeline link failed: %d", ret); return ret; }
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Pipeline link failed: %d", ret); goto err_cleanup; }
 
     /* Event interface: listen to pipeline + element events */
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
     s_evt = audio_event_iface_init(&evt_cfg);
     if (!s_evt) {
         ESP_LOGE(TAG, "Failed to create event interface");
-        return ESP_FAIL;
+        goto err_cleanup;
     }
     audio_pipeline_set_listener(s_pipeline, s_evt);
 
@@ -170,6 +170,25 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     s_current_codec = PIPELINE_CODEC_MP3;
     ESP_LOGI(TAG, "Pipeline initialized");
     return ESP_OK;
+
+err_cleanup:
+    if (s_evt) {
+        audio_event_iface_destroy(s_evt);
+        s_evt = NULL;
+    }
+    if (s_pipeline) {
+        audio_pipeline_unregister(s_pipeline, s_http_el);
+        audio_pipeline_unregister(s_pipeline, s_decoder_el);
+        audio_pipeline_unregister(s_pipeline, s_passthrough);
+        audio_pipeline_unregister(s_pipeline, s_a2dp_el);
+        audio_pipeline_deinit(s_pipeline);
+        s_pipeline = NULL;
+    }
+    if (s_http_el)    { audio_element_deinit(s_http_el);    s_http_el = NULL; }
+    if (s_decoder_el) { audio_element_deinit(s_decoder_el); s_decoder_el = NULL; }
+    if (s_passthrough){ audio_element_deinit(s_passthrough); s_passthrough = NULL; }
+    if (s_a2dp_el)    { audio_element_deinit(s_a2dp_el);    s_a2dp_el = NULL; }
+    return ESP_FAIL;
 }
 
 esp_err_t pipeline_start(const char *url)
@@ -211,14 +230,25 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
     audio_pipeline_stop(s_pipeline);
     audio_pipeline_wait_for_stop(s_pipeline);
 
+    /* Unlink pipeline before swapping elements */
+    audio_pipeline_unlink(s_pipeline);
+
     /* Unregister old decoder, register new one */
     audio_pipeline_unregister(s_pipeline, s_decoder_el);
     audio_element_deinit(s_decoder_el);
     s_decoder_el = new_decoder;
-    audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
-    
+    esp_err_t ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register new decoder: %d", ret);
+        return ret;
+    }
+
     const char *link_tag[] = {"http", "dec", "pass", "bt"};
-    audio_pipeline_link(s_pipeline, link_tag, 4);
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to relink pipeline after decoder swap: %d", ret);
+        return ret;
+    }
 
     s_current_codec = new_codec;
     ESP_LOGI(TAG, "Decoder recreated for codec %d", new_codec);

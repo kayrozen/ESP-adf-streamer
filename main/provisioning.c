@@ -3,7 +3,6 @@
 #include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/ringbuf.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -18,7 +17,6 @@ static const char *TAG = "provision";
 #define PROVISION_CMD_PREFIX "PROVISION:"
 #define PROVISION_CMD_PREFIX_LEN (sizeof(PROVISION_CMD_PREFIX) - 1)
 
-static RingbufHandle_t s_rx_ringbuf = NULL;
 static TaskHandle_t s_provision_task = NULL;
 static volatile bool s_provision_running = false;
 
@@ -142,22 +140,29 @@ static void provision_parse_and_save(const char *json_str)
 
 static void provision_task(void *arg)
 {
-    uint8_t *data = NULL;
-    size_t len = 0;
+    uint8_t *data = malloc(UART_BUF_SIZE);
+    if (!data) {
+        ESP_LOGE(TAG, "Failed to allocate UART read buffer");
+        s_provision_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
     char line_buf[256];
     size_t line_pos = 0;
 
     ESP_LOGI(TAG, "Provisioning task started, listening on UART%d", UART_PORT_NUM);
 
     while (s_provision_running) {
-        /* Receive from ring buffer */
-        data = (uint8_t *)xRingbufferReceive(s_rx_ringbuf, &len, pdMS_TO_TICKS(100));
-        if (!data) {
+        /* Read directly from UART driver */
+        int len = uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
+        if (len <= 0) {
             continue;
         }
+        data[len] = '\0';
 
         /* Process each byte */
-        for (size_t i = 0; i < len; i++) {
+        for (int i = 0; i < len; i++) {
             char c = data[i];
             if (c == '\n' || c == '\r') {
                 if (line_pos > 0) {
@@ -177,11 +182,9 @@ static void provision_task(void *arg)
                 line_buf[line_pos++] = c;
             }
         }
-
-        vRingbufferReturnItem(s_rx_ringbuf, data);
-        data = NULL;
     }
 
+    free(data);
     ESP_LOGI(TAG, "Provisioning task ended");
     vTaskDelete(NULL);
 }
@@ -193,7 +196,7 @@ esp_err_t provisioning_start(void)
         return ESP_OK;
     }
 
-    /* Install UART driver with event queue and ring buffer */
+    /* Install UART driver */
     uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -207,24 +210,12 @@ esp_err_t provisioning_start(void)
                                         UART_BUF_SIZE * 2, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
 
-    /* Use ring buffer for RX */
-    RingbufferType_t type = RINGBUF_TYPE_BYTEBUF;
-    s_rx_ringbuf = xRingbufferCreate(UART_BUF_SIZE, type);
-    if (!s_rx_ringbuf) {
-        ESP_LOGE(TAG, "Failed to create RX ring buffer");
-        return ESP_ERR_NO_MEM;
-    }
-
-    /* Note: uart_driver_install doesn't directly give us a ring buffer for RX.
-     * We'll use a custom approach - read from UART in the task. */
-
     s_provision_running = true;
     BaseType_t ret = xTaskCreate(provision_task, "provision", 4096, NULL, 10, &s_provision_task);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create provisioning task");
         s_provision_running = false;
-        vRingbufferDelete(s_rx_ringbuf);
-        s_rx_ringbuf = NULL;
+        uart_driver_delete(UART_PORT_NUM);
         return ESP_FAIL;
     }
 
@@ -238,10 +229,6 @@ void provisioning_stop(void)
     if (s_provision_task) {
         vTaskDelete(s_provision_task);
         s_provision_task = NULL;
-    }
-    if (s_rx_ringbuf) {
-        vRingbufferDelete(s_rx_ringbuf);
-        s_rx_ringbuf = NULL;
     }
     uart_driver_delete(UART_PORT_NUM);
 }
