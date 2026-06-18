@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "audio_event_iface.h"
@@ -30,7 +31,60 @@ static const station_t TEST_STATIONS[NUM_TEST_STATIONS] = {
 
 static int s_current_station = 0;
 
-/* Pipeline event loop — handles all ADF element/pipeline events */
+/* Phase D — hot station change, keeps A2DP alive.
+ * Must be called from the event loop thread to avoid racing with queued events. */
+#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+/* Pending station index set by timer callback, consumed in event loop thread */
+static volatile int s_next_station_request = -1;
+static esp_timer_handle_t s_rotation_timer  = NULL;
+static int s_rotation_next_idx = 1;  /* skip idx 0 — already playing at start */
+
+static void rotation_timer_cb(void *arg)
+{
+    if (s_rotation_next_idx < NUM_TEST_STATIONS) {
+        s_next_station_request = s_rotation_next_idx++;
+    }
+    if (s_rotation_next_idx >= NUM_TEST_STATIONS) {
+        esp_timer_stop(s_rotation_timer);
+    }
+}
+
+static void start_rotation_timer(void)
+{
+    esp_timer_create_args_t args = {
+        .callback = rotation_timer_cb,
+        .name     = "phase_d_rot",
+    };
+    if (esp_timer_create(&args, &s_rotation_timer) == ESP_OK) {
+        /* Fire every 60 s; first switch happens 60 s after start */
+        esp_timer_start_periodic(s_rotation_timer, 60ULL * 1000 * 1000);
+        ESP_LOGI(TAG, "Phase D: rotation timer started (60 s intervals)");
+    } else {
+        ESP_LOGE(TAG, "Failed to create rotation timer");
+    }
+}
+
+static void do_switch_to_station(int idx)
+{
+    if (idx < 0 || idx >= NUM_TEST_STATIONS) return;
+    ESP_LOGI(TAG, "Switching to station %d: %s", idx, TEST_STATIONS[idx].name);
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t ret = pipeline_change_station(TEST_STATIONS[idx].url);
+    if (ret == ESP_OK) {
+        s_current_station = idx;
+    }
+    ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", (esp_timer_get_time() - t0) / 1000);
+
+    passthrough_stats_t stats;
+    passthrough_el_get_stats(pipeline_get_passthrough_el(), &stats);
+    ESP_LOGI(TAG, "Phase D passthrough: bytes=%" PRIu64 "  frames=%" PRIu32,
+             stats.bytes_passed, stats.frames_passed);
+}
+#endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
+
+/* Pipeline event loop — handles all ADF element/pipeline events.
+ * Station rotation (Phase D) is also driven from here to avoid racing with
+ * queued element events after a decoder hot-swap. */
 static void run_event_loop(void)
 {
     audio_event_iface_handle_t evt = pipeline_get_event_iface();
@@ -42,9 +96,21 @@ static void run_event_loop(void)
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
         audio_event_iface_msg_t msg;
-        esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
+        /* Use a short timeout so we can service station-rotation requests from
+         * the timer callback without a separate task that could race with us. */
+        esp_err_t ret = audio_event_iface_listen(evt, &msg, pdMS_TO_TICKS(500));
+
+#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+        /* Check for pending station rotation (set by timer, consumed here) */
+        int next = s_next_station_request;
+        if (next >= 0) {
+            s_next_station_request = -1;
+            do_switch_to_station(next);
+        }
+#endif
+
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "audio_event_iface_listen error: %d", ret);
+            /* ESP_ERR_TIMEOUT is normal — just loop for next event or rotation check */
             continue;
         }
 
@@ -74,47 +140,6 @@ static void run_event_loop(void)
         }
     }
 }
-
-/* Phase D — hot station change, keeps A2DP alive.
- * Only compiled when rotation is enabled to avoid unused-function error. */
-#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
-static esp_err_t switch_to_station(int idx)
-{
-    if (idx < 0 || idx >= NUM_TEST_STATIONS) return ESP_ERR_INVALID_ARG;
-    ESP_LOGI(TAG, "Switching to station %d: %s", idx, TEST_STATIONS[idx].name);
-    int64_t t0 = esp_timer_get_time();
-    esp_err_t ret = pipeline_change_station(TEST_STATIONS[idx].url);
-    if (ret == ESP_OK) {
-        s_current_station = idx;  /* Only update index on success */
-    }
-    int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
-    ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", elapsed_ms);
-    return ret;
-}
-
-/* Phase D rotation task — runs independently of the event loop */
-static void rotation_task(void *arg)
-{
-    ESP_LOGI(TAG, "Phase D rotation task started");
-    vTaskDelay(pdMS_TO_TICKS(60 * 1000));  // Initial delay before first rotation
-
-    /* Start from index 1 since index 0 is already playing at startup */
-    for (int i = 1; i < NUM_TEST_STATIONS; i++) {
-        switch_to_station(i);
-
-        passthrough_stats_t stats;
-        passthrough_el_get_stats(pipeline_get_passthrough_el(), &stats);
-        ESP_LOGI(TAG, "Phase D passthrough: bytes=%" PRIu64 "  frames=%" PRIu32,
-                 stats.bytes_passed, stats.frames_passed);
-
-        if (i < NUM_TEST_STATIONS - 1) {
-            vTaskDelay(pdMS_TO_TICKS(60 * 1000));
-        }
-    }
-    ESP_LOGI(TAG, "Phase D rotation complete");
-    vTaskDelete(NULL);
-}
-#endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
 
 void app_main(void)
 {
@@ -169,21 +194,28 @@ void app_main(void)
     monitor_init();
     monitor_start();
 
+    /* Wait for A2DP connection before starting the pipeline to avoid ring-buffer
+     * overflow while the BT sink is not yet accepting PCM data. */
+    ESP_LOGI(TAG, "Waiting for A2DP connection …");
+    int a2dp_wait_ms = 0;
+    while (!bt_manager_is_a2dp_connected() && a2dp_wait_ms < 10000) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        a2dp_wait_ms += 200;
+    }
+    if (!bt_manager_is_a2dp_connected()) {
+        ESP_LOGW(TAG, "A2DP not connected after 10 s — starting pipeline anyway");
+    }
+
     /* ---- Phase B: Start first station (MP3 — simplest) ---- */
     ESP_LOGI(TAG, "Starting Phase B — MP3 Icecast baseline test");
     int64_t t_start = esp_timer_get_time();
     ESP_ERROR_CHECK(pipeline_start(TEST_STATIONS[0].url));
     ESP_LOGI(TAG, "Pipeline start latency: %" PRId64 " ms",
              (esp_timer_get_time() - t_start) / 1000);
-    /*
-     * Phase D smoke test — switch all stations in order after 60s each.
-     * Comment this block out to stay on one station for Phase C endurance tests.
-     */
-    /* ---- Main event loop ---- */
+
+    /* ---- Phase D: station rotation timer (runs inside event loop thread) ---- */
     #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
-    /* Start Phase D rotation in a separate task so event loop stays responsive */
-    ESP_LOGI(TAG, "Phase D: station rotation enabled");
-    xTaskCreatePinnedToCore(rotation_task, "phase_d_rot", 4 * 1024, NULL, 5, NULL, 1);
+    start_rotation_timer();
     #endif
 
     run_event_loop();

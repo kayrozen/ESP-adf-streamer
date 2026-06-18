@@ -30,7 +30,8 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6]);
 
 /**
  * Start streaming from the given URL.
- * Blocks until A2DP is connected and audio is flowing, or returns error.
+ * Caller must ensure A2DP is connected (bt_manager_is_a2dp_connected()) before
+ * calling to avoid ring-buffer overflow while the BT sink is not yet ready.
  */
 esp_err_t pipeline_start(const char *url);
 

@@ -16,7 +16,7 @@
 static const char *TAG = "provision";
 
 #define UART_PORT_NUM      UART_NUM_0
-#define UART_BUF_SIZE      (8192)  // Increased from 1024 to handle larger JSON payloads
+#define UART_BUF_SIZE      (1024)
 #define PROVISION_CMD_PREFIX "PROVISION:"
 #define PROVISION_CMD_PREFIX_LEN (sizeof(PROVISION_CMD_PREFIX) - 1)
 
