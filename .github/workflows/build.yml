@@ -30,6 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:v5.3.1
+    defaults:
+      run:
+        # GitHub Actions uses sh by default inside Docker containers.
+        # Our steps use bash-specific syntax (${PIPESTATUS[0]}, ${var%.bin}),
+        # so force bash for every run: step in this job.
+        shell: bash
 
     steps:
       - name: Checkout source
