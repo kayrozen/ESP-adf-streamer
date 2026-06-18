@@ -88,6 +88,28 @@ static esp_err_t switch_to_station(int idx)
     ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", elapsed_ms);
     return ret;
 }
+
+/* Phase D rotation task — runs independently of the event loop */
+static void rotation_task(void *arg)
+{
+    ESP_LOGI(TAG, "Phase D rotation task started");
+    vTaskDelay(pdMS_TO_TICKS(60 * 1000));  // Initial delay before first rotation
+
+    for (int i = 0; i < NUM_TEST_STATIONS; i++) {
+        switch_to_station(i);
+
+        passthrough_stats_t stats;
+        passthrough_el_get_stats(pipeline_get_passthrough_el(), &stats);
+        ESP_LOGI(TAG, "Phase D passthrough: bytes=%" PRIu64 "  frames=%" PRIu32,
+                 stats.bytes_passed, stats.frames_passed);
+
+        if (i < NUM_TEST_STATIONS - 1) {
+            vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+        }
+    }
+    ESP_LOGI(TAG, "Phase D rotation complete");
+    vTaskDelete(NULL);
+}
 #endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
 
 void app_main(void)
@@ -149,21 +171,14 @@ void app_main(void)
     /*
      * Phase D smoke test — switch all stations in order after 60s each.
      * Comment this block out to stay on one station for Phase C endurance tests.
-     */
-#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
-    ESP_LOGI(TAG, "Phase D: station rotation enabled");
-    for (int i = 0; i < NUM_TEST_STATIONS; i++) {
-        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
-        switch_to_station(i);
-        passthrough_stats_t stats;
-        passthrough_el_get_stats(pipeline_get_passthrough_el(), &stats);
-        ESP_LOGI(TAG, "Phase D passthrough: bytes=%" PRIu64 "  frames=%" PRIu32,
-                 stats.bytes_passed, stats.frames_passed);
-    }
-#endif
+     /* ---- Main event loop ---- */
+     #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+     /* Start Phase D rotation in a separate task so event loop stays responsive */
+     ESP_LOGI(TAG, "Phase D: station rotation enabled");
+     xTaskCreatePinnedToCore(rotation_task, "phase_d_rot", 4 * 1024, NULL, 5, NULL, 1);
+     #endif
 
-    /* ---- Main event loop ---- */
-    run_event_loop();
+     run_event_loop();
 
     /* Not reached in normal operation */
     pipeline_deinit();

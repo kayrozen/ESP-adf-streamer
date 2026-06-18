@@ -55,18 +55,30 @@ static void monitor_task(void *arg)
 
 void monitor_start(void)
 {
-    if (s_monitor_task) return;
+    if (s_monitor_task) {
+        ESP_LOGW(TAG, "Monitor already running");
+        return;
+    }
     s_running = true;
-    xTaskCreatePinnedToCore(monitor_task, "monitor", 4 * 1024,
+    BaseType_t ret = xTaskCreatePinnedToCore(monitor_task, "monitor", 4 * 1024,
                             NULL, 2, &s_monitor_task, 1);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create monitor task");
+        s_monitor_task = NULL;
+        s_running = false;
+        return;
+    }
     ESP_LOGI(TAG, "Monitoring started (interval %ds)", MONITOR_INTERVAL_S);
 }
 
 void monitor_stop(void)
 {
-    if (s_monitor_task) {
-        s_running = false;
-        xTaskNotifyGive(s_monitor_task);
-        /* handle is cleared by the task itself before it deletes itself */
+    if (!s_monitor_task) {
+        return;
     }
+    s_running = false;
+    TaskHandle_t task = s_monitor_task;
+    s_monitor_task = NULL;  // Prevent races with restart
+    xTaskNotifyGive(task);
+    /* Task clears its own handle before deleting itself */
 }

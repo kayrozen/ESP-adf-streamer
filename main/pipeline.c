@@ -142,10 +142,11 @@ esp_err_t pipeline_change_station(const char *new_url)
 
     ESP_LOGI(TAG, "Changing station → %s", new_url);
 
-    /* Stop only the source; keep A2DP (bt element) alive to avoid BT gap */
+    /* Stop the pipeline but keep elements initialized to preserve A2DP connection.
+     * Do NOT call audio_pipeline_terminate() — that deinitializes all elements
+     * including the A2DP stream, which drops the Bluetooth connection. */
     audio_pipeline_stop(s_pipeline);
     audio_pipeline_wait_for_stop(s_pipeline);
-    audio_pipeline_terminate(s_pipeline);
 
     audio_element_set_uri(s_http_el, new_url);
     audio_pipeline_reset_ringbuffer(s_pipeline);

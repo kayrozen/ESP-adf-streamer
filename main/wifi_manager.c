@@ -74,7 +74,15 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
     strlcpy((char *)wifi_cfg.sta.ssid,     ssid, sizeof(wifi_cfg.sta.ssid));
     strlcpy((char *)wifi_cfg.sta.password, pass ? pass : "",
             sizeof(wifi_cfg.sta.password));
-    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    /* Set minimum auth mode threshold based on whether password is provided.
+     * Open network (no pass) → WIFI_AUTH_OPEN
+     * Secured network (pass given) → WIFI_AUTH_WPA_PSK (supports WPA/WPA2/WPA3) */
+    if (pass && strlen(pass) > 0) {
+        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA_PSK;
+    } else {
+        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    }
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());

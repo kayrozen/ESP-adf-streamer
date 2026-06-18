@@ -22,11 +22,20 @@ static bool     s_a2dp_connected = false;
 
 static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
+    if (!param) {
+        ESP_LOGW(TAG, "GAP callback with NULL param");
+        return;
+    }
+
     switch (event) {
     case ESP_BT_GAP_DISC_RES_EVT: {
         /* Log every discovered device */
         char bda_str[18];
         uint8_t *bda = param->disc_res.bda;
+        if (!bda) {
+            ESP_LOGW(TAG, "Disc result with NULL BDA");
+            break;
+        }
         snprintf(bda_str, sizeof(bda_str), "%02X:%02X:%02X:%02X:%02X:%02X",
                  bda[5], bda[4], bda[3], bda[2], bda[1], bda[0]);
         ESP_LOGI(TAG, "Found device: %s", bda_str);
@@ -36,7 +45,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
          * UUID list (or NULL) and writes the byte-length into rlen. */
         for (int i = 0; i < param->disc_res.num_prop; i++) {
             esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
-            if (p->type == ESP_BT_GAP_DEV_PROP_EIR) {
+            if (p && p->type == ESP_BT_GAP_DEV_PROP_EIR && p->val) {
                 uint8_t *eir  = p->val;
                 uint8_t  rlen = 0;
                 uint8_t *uuids = esp_bt_gap_resolve_eir_data(
@@ -45,7 +54,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                     uuids = esp_bt_gap_resolve_eir_data(
                         eir, ESP_BT_EIR_TYPE_CMPL_16BITS_UUID, &rlen);
                 }
-                if (uuids) {
+                if (uuids && rlen >= 2) {
                     /* 0x110B = A2DP Sink */
                     for (int j = 0; j + 1 < rlen; j += 2) {
                         uint16_t u = uuids[j] | (uuids[j + 1] << 8);
@@ -53,7 +62,9 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                             ESP_LOGI(TAG, "A2DP Sink found: %s", bda_str);
                             memcpy(s_peer_bda, bda, 6);
                             esp_bt_gap_cancel_discovery();
-                            xEventGroupSetBits(s_bt_event_group, BT_FOUND_BIT);
+                            if (s_bt_event_group) {
+                                xEventGroupSetBits(s_bt_event_group, BT_FOUND_BIT);
+                            }
                             return;
                         }
                     }
@@ -69,7 +80,8 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         break;
     case ESP_BT_GAP_AUTH_CMPL_EVT:
         if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGI(TAG, "Auth OK with: %s", param->auth_cmpl.device_name);
+            ESP_LOGI(TAG, "Auth OK with: %s",
+                     param->auth_cmpl.device_name ? param->auth_cmpl.device_name : "unknown");
         } else {
             ESP_LOGW(TAG, "Auth failed: %d", param->auth_cmpl.stat);
         }
@@ -83,16 +95,25 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 
 static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
+    if (!param) {
+        ESP_LOGW(TAG, "A2DP callback with NULL param");
+        return;
+    }
+
     switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
         if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             ESP_LOGI(TAG, "A2DP connected");
             s_a2dp_connected = true;
-            xEventGroupSetBits(s_bt_event_group, A2DP_CONN_BIT);
+            if (s_bt_event_group) {
+                xEventGroupSetBits(s_bt_event_group, A2DP_CONN_BIT);
+            }
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
             ESP_LOGW(TAG, "A2DP disconnected");
             s_a2dp_connected = false;
-            xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
+            if (s_bt_event_group) {
+                xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
+            }
         }
         break;
     case ESP_A2D_AUDIO_STATE_EVT:
@@ -110,6 +131,11 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 
 esp_err_t bt_manager_init(const char *device_name)
 {
+    if (!device_name) {
+        ESP_LOGE(TAG, "device_name cannot be NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     s_bt_event_group = xEventGroupCreate();
     if (!s_bt_event_group) {
         ESP_LOGE(TAG, "Failed to create BT event group");
@@ -155,7 +181,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Scanning for A2DP sinks (%"PRIu32"s)…", timeout_s);
+    ESP_LOGI(TAG, "Scanning for A2DP sinks (%" PRIu32 "s)…", timeout_s);
     ESP_ERROR_CHECK(esp_bt_gap_start_discovery(
         ESP_BT_INQ_MODE_GENERAL_INQUIRY,
         (int)(timeout_s > 30 ? 30 : timeout_s),
@@ -165,7 +191,8 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
                                            BT_FOUND_BIT, pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(timeout_s * 1000));
     if (!(bits & BT_FOUND_BIT)) {
-        ESP_LOGE(TAG, "No A2DP sink found within %"PRIu32"s", timeout_s);
+        ESP_LOGE(TAG, "No A2DP sink found within %" PRIu32 "s", timeout_s);
+        esp_bt_gap_cancel_discovery();  // Clean up discovery on timeout
         return ESP_ERR_NOT_FOUND;
     }
     return ESP_OK;

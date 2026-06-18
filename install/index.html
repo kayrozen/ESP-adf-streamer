@@ -413,16 +413,14 @@ function buildNvsPage(entries) {
   }
 
   function buildStringEntries(nsIndex, key, value) {
-    // Type=SZ (0x21). String > 8 bytes uses BLOB_DATA chunks (type 0x42/0x48).
-    // For simplicity we always use SZ with multi-span.
+    // Type=SZ (0x21). String data layout in NVS:
+    // First entry:  bytes 0-7=header, 8-23=key, 24-25=data_size, 26-31=first 6 bytes of data
+    // Continuation entries: full 32 bytes of data each
+    // Total capacity for given span: 6 + (span - 1) * 32 bytes
+    // So: span = 1 + ceil(max(0, dataLen - 6) / 32)
     const enc = new TextEncoder().encode(value + "\0");  // null-terminated
-    const dataLen  = enc.length;
-    const span     = 1 + Math.ceil(dataLen / (NVS_ENTRY_SIZE - 8));
-    // Actually: first entry header holds key + up to 8 bytes of data (bytes 24-31)
-    // Continuation entries hold 32 bytes of data each.
-    // Simpler correct layout: all data starting at byte 24 of first entry.
-    // Total data capacity = (span * 32) - 24; if dataLen fits, use span entries.
-    const neededSpan = 1 + Math.ceil(Math.max(0, dataLen - 8) / NVS_ENTRY_SIZE);
+    const dataLen = enc.length;
+    const neededSpan = 1 + Math.ceil(Math.max(0, dataLen - 6) / 32);
     const totalSlots = neededSpan;
 
     const entries = [];
