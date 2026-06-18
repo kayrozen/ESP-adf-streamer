@@ -16,6 +16,7 @@
 #include "passthrough_el.h"
 #include "station_config.h"
 #include "config_manager.h"
+#include "provisioning.h"
 
 static const char *TAG = "app_main";
 
@@ -124,6 +125,9 @@ void app_main(void)
 
     /* ---- Runtime config (NVS "preset" namespace, fallback to station_config.h) ---- */
     ESP_ERROR_CHECK(config_manager_init());
+
+    /* ---- UART Provisioning (Web Serial after flash) ---- */
+    ESP_ERROR_CHECK(provisioning_start());
 
     /* ---- Boot heap report (Phase A.1 validation) ---- */
     ESP_LOGI(TAG, "=== ESP-ADF Streamer prototype ===");

@@ -13,6 +13,7 @@ set(COMPONENT_SRCS
     "monitor.c"
     "passthrough_el.c"
     "config_manager.c"
+    "provisioning.c"
 )
 
 set(COMPONENT_ADD_INCLUDEDIRS .)

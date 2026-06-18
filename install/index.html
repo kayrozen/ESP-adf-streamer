@@ -156,17 +156,51 @@
     .field.has-error .err { display: block; }
     .field.has-error input { border-color: #c43030; }
 
+    /* Button styles */
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      padding: 0.7rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      width: 100%;
+    }
+
+    .btn:hover:not(:disabled) {
+      opacity: 0.85;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn.secondary {
+      background: #2a2a2e;
+      color: var(--text);
+    }
+
+    .btn.secondary:hover:not(:disabled) {
+      background: #3a3a3e;
+    }
+
     /* Install section */
     .install-wrap {
       display: flex;
       flex-direction: column;
       align-items: flex-start;
       gap: 1rem;
+      width: 100%;
     }
 
     esp-web-install-button {
       --esp-tools-button-color: var(--accent);
       --esp-tools-button-text-color: #fff;
+      width: 100%;
     }
 
     esp-web-install-button::part(button) {
@@ -179,6 +213,7 @@
       font-weight: 600;
       cursor: pointer;
       transition: opacity 0.15s;
+      width: 100%;
     }
 
     esp-web-install-button::part(button):hover {
@@ -193,6 +228,7 @@
       font-size: 0.85rem;
       color: #d4a820;
       line-height: 1.5;
+      width: 100%;
     }
 
     .warning strong { color: #f0c030; }
@@ -212,6 +248,31 @@
       background: #0d1f0d;
       color: #5cba5c;
     }
+
+    .config-status.provisioning {
+      border-color: var(--accent);
+      background: #2a1515;
+      color: #e86060;
+    }
+
+    .provision-log {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      background: #0a0a0c;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      max-height: 200px;
+      overflow-y: auto;
+      color: #8a8a90;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .provision-log .sent { color: #5cba5c; }
+    .provision-log .received { color: #d4a820; }
+    .provision-log .error { color: #e05050; }
+    .provision-log .info { color: #5cba5c; }
 
     .footer {
       margin-top: 2rem;
@@ -240,6 +301,65 @@
       border-radius: 4px;
       border: 1px solid var(--border);
     }
+
+    .hidden { display: none; }
+
+    /* Step indicator */
+    .step-indicator {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      justify-content: center;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.25rem;
+      flex: 1;
+      padding: 0.5rem;
+      border-radius: 8px;
+      background: #1a1a1c;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .step.active {
+      border-color: var(--accent);
+      background: #2a1515;
+      color: var(--accent);
+    }
+
+    .step.complete {
+      border-color: #2a4a2a;
+      background: #0d1f0d;
+      color: #5cba5c;
+    }
+
+    .step-number {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.75rem;
+      background: var(--border);
+      color: var(--muted);
+    }
+
+    .step.active .step-number {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .step.complete .step-number {
+      background: #5cba5c;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -249,6 +369,22 @@
     <p class="subtitle">
       Radio internet (HLS / Icecast) → décodage embarqué → Bluetooth A2DP source
     </p>
+
+    <!-- Step indicator -->
+    <div class="step-indicator" id="step-indicator">
+      <div class="step active" data-step="1">
+        <div class="step-number">1</div>
+        <span>Flasher</span>
+      </div>
+      <div class="step" data-step="2">
+        <div class="step-number">2</div>
+        <span>Configurer</span>
+      </div>
+      <div class="step" data-step="3">
+        <div class="step-number">3</div>
+        <span>Provisionner</span>
+      </div>
+    </div>
 
     <!-- Requirements card -->
     <div class="card">
@@ -267,12 +403,23 @@
       </ol>
     </div>
 
-    <!-- Config card -->
-    <div class="card">
-      <h2>Configuration</h2>
+    <!-- Step 1: Flash -->
+    <div class="card" id="step-1">
+      <h2>Étape 1 : Flash du firmware</h2>
+      <div class="install-wrap">
+        <div class="chip-tag">ESP32 · 16 MB Flash · 8 MB PSRAM</div>
+        <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
+      </div>
+      <p style="font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">
+        Le firmware inclut les valeurs par défaut compilées. La configuration WiFi/Bluetooth sera envoyée à l'étape 3.
+      </p>
+    </div>
+
+    <!-- Step 2: Configuration -->
+    <div class="card hidden" id="step-2">
+      <h2>Étape 2 : Configuration</h2>
       <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1rem;">
-        Ces paramètres sont écrits dans la partition NVS de l'ESP32 au moment du flash.
-        Laissez vide pour utiliser les valeurs compilées par défaut.
+        Remplissez ces champs — ils seront envoyés via UART (Web Serial) après le flash.
       </p>
 
       <div class="field" id="f-ssid">
@@ -297,17 +444,18 @@
       <div id="config-status" class="config-status">
         Entrez votre configuration ci-dessus ou laissez vide pour utiliser les défauts compilés.
       </div>
+
+      <button class="btn" id="provision-btn" disabled>Provisionner via UART</button>
     </div>
 
-    <!-- Flash card -->
-    <div class="card">
-      <h2>Flash</h2>
-      <div class="install-wrap">
-        <div class="chip-tag">ESP32 · 16 MB Flash · 8 MB PSRAM</div>
-
-        <esp-web-install-button id="install-btn" manifest="manifest.json">
-        </esp-web-install-button>
+    <!-- Step 3: Provisioning -->
+    <div class="card hidden" id="step-3">
+      <h2>Étape 3 : Provisioning UART</h2>
+      <div class="warning">
+        <strong>Gardez l'appareil connecté.</strong> Le provisioning envoie la config via Web Serial (115200 baud).
+        Le firmware doit être en écoute sur l'UART pour recevoir la configuration.
       </div>
+      <div id="provision-log" class="provision-log" style="display:none;"></div>
     </div>
 
     <!-- After flash card -->
@@ -330,281 +478,104 @@
   </main>
 
 <script>
-// ─── NVS binary generator ────────────────────────────────────────────────────
-// Generates a 4096-byte ESP NVS page (v2 format) containing a "preset"
-// namespace with string entries: ssid, pass, btmac.
-// Reference: esp-idf/components/nvs_flash/src/nvs_page.cpp
+/* ─── UART Provisioning ───────────────────────────────────────────────────────
+ * After flashing, we use Web Serial to send configuration to the device.
+ * The device firmware should implement a simple line-based protocol:
+ *   - Received: "PROVISION:{\"ssid\":\"...\",\"pass\":\"...\",\"btmac\":\"...\"}\\n"
+ *   - Responds: "OK\\n" or "ERROR:reason\\n"
+ *   - Device saves to NVS and reboots
+ */
 
-const NVS_PAGE_SIZE    = 4096;
-const NVS_ENTRY_SIZE   = 32;
-const NVS_HEADER_SIZE  = 32;
-const NVS_BITMAP_SIZE  = 32;
-const NVS_ENTRY_COUNT  = 126;  // (4096 - 32 - 32) / 32
+const installBtn = document.getElementById("install-btn");
+const provisionBtn = document.getElementById("provision-btn");
+const statusEl = document.getElementById("config-status");
+const provisionLog = document.getElementById("provision-log");
+const steps = {
+  1: document.getElementById("step-1"),
+  2: document.getElementById("step-2"),
+  3: document.getElementById("step-3"),
+};
+const stepIndicators = document.querySelectorAll(".step-indicator .step");
 
-/* CRC32 (IEEE 802.3, reflected polynomial) */
-function makeCrcTable() {
-  const t = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[i] = c;
-  }
-  return t;
-}
-const CRC_TABLE = makeCrcTable();
+let port = null;
+let reader = null;
+let writer = null;
+let keepReading = false;
 
-function crc32(buf, init = 0xFFFFFFFF) {
-  let c = init;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
-
-function buildNvsPage(entries) {
-  // entries: [{key, value}]  — key max 15 chars, value is a string
-  // Returns Uint8Array(4096) or null if no entries.
-
-  if (entries.length === 0) return null;
-
-  const page = new Uint8Array(NVS_PAGE_SIZE).fill(0xFF);
-  const view = new DataView(page.buffer);
-
-  // ── Slot index tracking ──
-  let slot = 0;  // current entry index (0-125)
-
-  function markBitmapWritten(idx) {
-    // 2 bits per entry, stored LSB-first in the 32-byte bitmap at offset 32.
-    // WRITTEN = 0b10 → set bit[2*idx] = 0 (was 1), leave bit[2*idx+1] = 1
-    const byteIdx = Math.floor(idx / 4);
-    const bitOff  = (idx % 4) * 2;
-    const bmOff   = NVS_HEADER_SIZE + byteIdx;
-    page[bmOff] &= ~(1 << bitOff);   // clear the lower bit → WRITTEN (0b10)
-  }
-
-  function writeEntry(idx, entryBytes) {
-    const off = NVS_HEADER_SIZE + NVS_BITMAP_SIZE + idx * NVS_ENTRY_SIZE;
-    for (let i = 0; i < NVS_ENTRY_SIZE; i++) page[off + i] = entryBytes[i];
-    markBitmapWritten(idx);
-  }
-
-  function entryChecksum(entryBytes) {
-    // CRC covers bytes [0-3] and [8-31] (28 bytes total); bytes [4-7] hold the CRC.
-    const part = new Uint8Array(28);
-    part.set(entryBytes.subarray(0, 4), 0);
-    part.set(entryBytes.subarray(8, 32), 4);
-    return crc32(part);
-  }
-
-  function buildNamespaceEntry(nsIndex) {
-    // Type=U8 (0x01), span=1, chunk_index=0xFF (not used for primitives)
-    const e = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
-    e[0] = 0;           // ns_index = 0 for the namespace entry itself
-    e[1] = 0x01;        // type = U8
-    e[2] = 1;           // span = 1
-    e[3] = 0xFF;        // chunk_index unused
-    // key (bytes 8-23, null-terminated, max 15 chars)
-    const keyBytes = new TextEncoder().encode("preset");
-    e.set(keyBytes, 8);
-    // value = namespace index (byte 24)
-    e[24] = nsIndex;
-    // CRC
-    const crc = entryChecksum(e);
-    new DataView(e.buffer).setUint32(4, crc, true);
-    return e;
-  }
-
-  function buildStringEntries(nsIndex, key, value) {
-    // Type=SZ (0x21). String data layout in NVS:
-    // First entry:  bytes 0-3=header, 8-23=key, 24-25=data_size, 26-31=first 6 bytes of data
-    // Continuation entries: full 32 bytes of data each
-    // Total capacity for given span: 6 + (span - 1) * 32 bytes
-    // So: span = 1 + ceil(max(0, dataLen - 6) / 32)
-    const enc = new TextEncoder().encode(value + "\0");  // null-terminated
-    const dataLen = enc.length;
-    const neededSpan = 1 + Math.ceil(Math.max(0, dataLen - 6) / 32);
-    const totalSlots = neededSpan;
-
-    const entries = [];
-    // First entry - build without CRC first
-    const first = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
-    first[0] = nsIndex;         // namespace index
-    first[1] = 0x21;            // type SZ (string)
-    first[2] = totalSlots;      // span
-    first[3] = 0xFF;            // chunk index (not used for SZ < page)
-    const keyB = new TextEncoder().encode(key.substring(0, 15));
-    first.set(keyB, 8);         // key at bytes 8-23
-    // data size at bytes 24-25 (little-endian)
-    new DataView(first.buffer).setUint16(24, dataLen, true);
-    // First 6 bytes of value data at offset 26
-    const chunk0 = enc.subarray(0, 6);
-    first.set(chunk0, 26);
-
-    entries.push(first);
-
-    // Continuation entries
-    let dataOff = 6;
-    for (let ci = 1; ci < totalSlots; ci++) {
-      const cont = new Uint8Array(NVS_ENTRY_SIZE).fill(0xFF);
-      const chunk = enc.subarray(dataOff, dataOff + NVS_ENTRY_SIZE);
-      cont.set(chunk, 0);
-      entries.push(cont);
-      dataOff += NVS_ENTRY_SIZE;
+function showStep(n) {
+  [1, 2, 3].forEach(i => {
+    const el = steps[i];
+    const dot = stepIndicators[i - 1];
+    if (i === n) {
+      el?.classList.remove("hidden");
+      dot?.classList.add("active");
+      dot?.classList.remove("complete");
+    } else if (i < n) {
+      el?.classList.remove("hidden");
+      dot?.classList.remove("active");
+      dot?.classList.add("complete");
+    } else {
+      el?.classList.add("hidden");
+      dot?.classList.remove("active", "complete");
     }
-
-    // Now compute CRC for the first entry covering ALL data
-    // CRC covers: bytes [0-3] (ns, type, span, chunk_idx) + bytes [8-31] (key + data_size + first 6 bytes)
-    // PLUS all continuation entry data (32 bytes each)
-    const crcData = new Uint8Array(28 + (totalSlots - 1) * 32);
-    // First 4 bytes: ns, type, span, chunk_idx
-    crcData.set(first.subarray(0, 4), 0);
-    // Next 24 bytes: key (16 bytes) + data_size (2) + first 6 data bytes = 24 bytes
-    crcData.set(first.subarray(8, 32), 4);
-    // Continuation entry data
-    let crcOff = 28;
-    for (let ci = 1; ci < totalSlots; ci++) {
-      crcData.set(entries[ci].subarray(0, 32), crcOff);
-      crcOff += 32;
-    }
-    const crc = crc32(crcData);
-    new DataView(first.buffer).setUint32(4, crc, true);
-
-    return entries;
-  }
-
-  // ── Write entries ──
-  const NS_IDX = 1;  // namespace index we assign to "preset"
-
-  // 1. Namespace entry
-  writeEntry(slot++, buildNamespaceEntry(NS_IDX));
-
-  // 2. String entries
-  for (const { key, value } of entries) {
-    const parts = buildStringEntries(NS_IDX, key, value);
-    for (const part of parts) {
-      if (slot >= NVS_ENTRY_COUNT) break;
-      writeEntry(slot++, part);
-    }
-  }
-
-  // ── Page header (32 bytes) ──
-  // State = ACTIVE (0xFFFFFFFE), seq_no = 0 (first page), version = 0xFE
-  view.setUint32(0, 0xFFFFFFFE, true);   // state
-  view.setUint32(4, 0, true);            // seq_no
-  view.setUint32(8, 0xFFFFFF00 | 0xFE, true);  // version 0xFE in byte 8
-  // bytes 12-27: unused (0xFF)
-  // CRC at bytes 28-31: covers bytes 0-27
-  const headerForCrc = page.subarray(0, 28);
-  const hdrCrc = crc32(headerForCrc);
-  view.setUint32(28, hdrCrc, true);
-
-  return page;
+  });
 }
 
-// ─── Manifest + blob URL management ──────────────────────────────────────────
+// Install button event listeners
+installBtn.addEventListener("install-start", () => {
+  logProvision("info", "Flash started...");
+});
 
-let s_nvsBlobUrl  = null;
-let s_manifestUrl = null;
+installBtn.addEventListener("install-end", () => {
+  logProvision("info", "Flash completed successfully!");
+  showStep(2);
+  provisionBtn.disabled = false;
+  statusEl.className = "config-status ready";
+  statusEl.textContent = "Flash OK. Entrez votre configuration puis cliquez Provisionner.";
+});
 
-function revokeBlobUrls() {
-  if (s_nvsBlobUrl)  { URL.revokeObjectURL(s_nvsBlobUrl);  s_nvsBlobUrl  = null; }
-  if (s_manifestUrl) { URL.revokeObjectURL(s_manifestUrl); s_manifestUrl = null; }
-}
+installBtn.addEventListener("install-error", (e) => {
+  logProvision("error", "Flash failed: " + (e.detail?.message || "Unknown error"));
+  statusEl.className = "config-status";
+  statusEl.textContent = "Erreur lors du flash. Vérifiez la connexion USB.";
+});
 
-async function fetchBaseManifest() {
-  try {
-    const r = await fetch("manifest.json");
-    return await r.json();
-  } catch {
-    return null;
-  }
-}
+// Validation
+const fSsid = document.getElementById("f-ssid");
+const fPass = document.getElementById("f-pass");
+const fMac = document.getElementById("f-mac");
 
-async function updateManifest() {
+function validateConfig() {
   const ssid = document.getElementById("inp-ssid").value.trim();
   const pass = document.getElementById("inp-pass").value;
-  const mac  = document.getElementById("inp-mac").value.trim();
+  const mac = document.getElementById("inp-mac").value.trim();
 
-  const statusEl = document.getElementById("config-status");
-  const installBtn = document.getElementById("install-btn");
-
-  // Validation
-  const fSsid = document.getElementById("f-ssid");
-  const fMac  = document.getElementById("f-mac");
   fSsid.classList.remove("has-error");
   fMac.classList.remove("has-error");
 
   if (pass && !ssid) {
     fSsid.classList.add("has-error");
-    statusEl.className = "config-status";
-    statusEl.textContent = "Erreur : SSID requis si un mot de passe est fourni.";
-    return;
+    return { valid: false, error: "SSID requis si un mot de passe est fourni." };
   }
 
   const macRe = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
   if (mac && !macRe.test(mac)) {
     fMac.classList.add("has-error");
-    statusEl.className = "config-status";
-    statusEl.textContent = "Erreur : format MAC invalide.";
-    return;
+    return { valid: false, error: "Format MAC invalide. Exemple : A4:C1:38:01:02:03" };
   }
 
-  revokeBlobUrls();
-
-  const nvsEntries = [];
-  if (ssid) nvsEntries.push({ key: "ssid",  value: ssid });
-  if (pass) nvsEntries.push({ key: "pass",  value: pass });
-  if (mac)  nvsEntries.push({ key: "btmac", value: mac  });
-
-  const baseManifest = await fetchBaseManifest();
-  if (!baseManifest) {
-    statusEl.className = "config-status";
-    statusEl.textContent = "Impossible de charger manifest.json — vérifiez le déploiement.";
-    return;
-  }
-
-  let manifestToUse;
-
-  if (nvsEntries.length === 0) {
-    // No config — use base manifest directly
-    installBtn.setAttribute("manifest", "manifest.json");
-    statusEl.className = "config-status";
-    statusEl.textContent = "Aucune configuration saisie — les défauts compilés seront utilisés.";
-    return;
-  }
-
-  // Build NVS blob
-  const nvsPage = buildNvsPage(nvsEntries);
-  const nvsBlob = new Blob([nvsPage], { type: "application/octet-stream" });
-  s_nvsBlobUrl  = URL.createObjectURL(nvsBlob);
-
-  // Clone manifest and inject NVS part at 0x9000 = 36864
-  manifestToUse = JSON.parse(JSON.stringify(baseManifest));
-  for (const build of manifestToUse.builds) {
-    // Remove any existing NVS part then prepend ours
-    build.parts = build.parts.filter(p => p.offset !== 36864);
-    build.parts.unshift({ path: s_nvsBlobUrl, offset: 36864 });
-  }
-
-  const manifestBlob = new Blob([JSON.stringify(manifestToUse)], { type: "application/json" });
-  s_manifestUrl = URL.createObjectURL(manifestBlob);
-  installBtn.setAttribute("manifest", s_manifestUrl);
-
-  const parts = [];
-  if (ssid)  parts.push(`SSID: ${ssid}`);
-  if (mac)   parts.push(`BT: ${mac}`);
-  statusEl.className = "config-status ready";
-  statusEl.textContent = "Prêt : " + parts.join(" · ") + " — le firmware incluera cette config NVS.";
+  return { valid: true, ssid, pass, mac };
 }
 
-// Debounced update
-let debounceTimer;
-function onInput() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(updateManifest, 400);
-}
-
-document.getElementById("inp-ssid").addEventListener("input", onInput);
-document.getElementById("inp-pass").addEventListener("input", onInput);
-document.getElementById("inp-mac").addEventListener("input", onInput);
+document.getElementById("inp-ssid").addEventListener("input", () => {
+  provisionBtn.disabled = !validateConfig().valid;
+});
+document.getElementById("inp-pass").addEventListener("input", () => {
+  provisionBtn.disabled = !validateConfig().valid;
+});
+document.getElementById("inp-mac").addEventListener("input", () => {
+  provisionBtn.disabled = !validateConfig().valid;
+});
 
 // Format MAC as user types (insert colons automatically)
 document.getElementById("inp-mac").addEventListener("keydown", function(e) {
@@ -613,6 +584,129 @@ document.getElementById("inp-mac").addEventListener("keydown", function(e) {
     this.value = v + ":";
   }
 });
+
+// Provisioning: Open Web Serial and send config
+async function provision() {
+  const validation = validateConfig();
+  if (!validation.valid) {
+    statusEl.className = "config-status";
+    statusEl.textContent = validation.error;
+    return;
+  }
+
+  const { ssid, pass, mac } = validation;
+
+  try {
+    showStep(3);
+    provisionLog.style.display = "block";
+    provisionLog.textContent = "";
+    statusEl.className = "config-status provisioning";
+    statusEl.textContent = "Connexion au port série...";
+    provisionBtn.disabled = true;
+
+    // Request serial port
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    const textDecoder = new TextDecoderStream();
+    const textEncoder = new TextEncoderStream();
+    const readable = port.readable.pipeThrough(textDecoder);
+    const writable = textEncoder.readable.pipeTo(port.writable);
+
+    reader = readable.getReader();
+    writer = writable.getWriter();
+    keepReading = true;
+
+    logProvision("info", "Port série ouvert (115200 baud)");
+    logProvision("info", "Attente du firmware...");
+
+    // Start reading responses
+    readLoop();
+
+    // Wait a bit for device to be ready
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Send provisioning command
+    const config = { ssid, pass, btmac: mac };
+    const cmd = "PROVISION:" + JSON.stringify(config) + "\n";
+    logProvision("sent", cmd.trim());
+    await writer.write(cmd);
+
+    // Wait for response
+    statusEl.textContent = "Configuration envoyée, attente réponse...";
+
+  } catch (err) {
+    logProvision("error", "Erreur: " + err.message);
+    statusEl.className = "config-status";
+    statusEl.textContent = "Erreur provisioning: " + err.message;
+    provisionBtn.disabled = false;
+    showStep(2);
+  }
+}
+
+async function readLoop() {
+  try {
+    while (keepReading && reader) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        const lines = value.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            if (trimmed.startsWith("OK") || trimmed.startsWith("SUCCESS")) {
+              logProvision("received", trimmed);
+              statusEl.className = "config-status ready";
+              statusEl.textContent = "Provisioning réussi ! L'appareil va redémarrer.";
+              provisionBtn.textContent = "Terminé";
+              provisionBtn.classList.add("secondary");
+              setTimeout(() => {
+                keepReading = false;
+                closePort();
+              }, 2000);
+            } else if (trimmed.startsWith("ERROR")) {
+              logProvision("error", trimmed);
+              statusEl.className = "config-status";
+              statusEl.textContent = "Erreur: " + trimmed;
+              provisionBtn.disabled = false;
+            } else {
+              logProvision("info", trimmed);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logProvision("error", "Erreur lecture: " + err.message);
+  }
+}
+
+function logProvision(type, msg) {
+  const timestamp = new Date().toLocaleTimeString();
+  const line = document.createElement("div");
+  line.className = type;
+  line.textContent = `[${timestamp}] ${msg}`;
+  provisionLog.appendChild(line);
+  provisionLog.scrollTop = provisionLog.scrollHeight;
+}
+
+async function closePort() {
+  keepReading = false;
+  if (reader) {
+    try { await reader.cancel(); } catch {}
+    reader = null;
+  }
+  if (writer) {
+    try { await writer.close(); } catch {}
+    writer = null;
+  }
+  if (port) {
+    try { await port.close(); } catch {}
+    port = null;
+  }
+}
+
+provisionBtn.addEventListener("click", provision);
 </script>
 </body>
 </html>

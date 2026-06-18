@@ -139,17 +139,26 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
         return ESP_FAIL;
     }
 
-    audio_pipeline_register(s_pipeline, s_http_el,     "http");
-    audio_pipeline_register(s_pipeline, s_decoder_el,  "dec");
-    audio_pipeline_register(s_pipeline, s_passthrough, "pass");
-    audio_pipeline_register(s_pipeline, s_a2dp_el,     "bt");
+    esp_err_t ret = audio_pipeline_register(s_pipeline, s_http_el, "http");
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register http failed: %d", ret); return ret; }
+    ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register dec failed: %d", ret); return ret; }
+    ret = audio_pipeline_register(s_pipeline, s_passthrough, "pass");
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register pass failed: %d", ret); return ret; }
+    ret = audio_pipeline_register(s_pipeline, s_a2dp_el, "bt");
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register bt failed: %d", ret); return ret; }
 
     const char *link_tag[] = {"http", "dec", "pass", "bt"};
-    audio_pipeline_link(s_pipeline, link_tag, 4);
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Pipeline link failed: %d", ret); return ret; }
 
     /* Event interface: listen to pipeline + element events */
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
     s_evt = audio_event_iface_init(&evt_cfg);
+    if (!s_evt) {
+        ESP_LOGE(TAG, "Failed to create event interface");
+        return ESP_FAIL;
+    }
     audio_pipeline_set_listener(s_pipeline, s_evt);
 
     /* Connect A2DP to the peer speaker */

@@ -181,12 +181,16 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
         return ESP_OK;
     }
 
-    /* GAP discovery duration is limited to 30s by the API */
+    /* GAP discovery duration is limited to 30s by the API.
+     * esp_bt_gap_start_discovery() duration parameter is in 1.28s units. */
     int discovery_duration_s = (timeout_s > 30) ? 30 : (int)timeout_s;
-    ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s)...", discovery_duration_s);
+    /* Convert seconds to 1.28s units for the API: duration * 1000 / 1280 = duration * 0.78125 */
+    uint8_t discovery_duration_units = (uint8_t)(discovery_duration_s * 1000 / 1280);
+    if (discovery_duration_units == 0) discovery_duration_units = 1;
+    ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s, %d units)...", discovery_duration_s, discovery_duration_units);
     ESP_ERROR_CHECK(esp_bt_gap_start_discovery(
         ESP_BT_INQ_MODE_GENERAL_INQUIRY,
-        discovery_duration_s,
+        discovery_duration_units,
         0));
 
     EventBits_t bits = xEventGroupWaitBits(s_bt_event_group,
