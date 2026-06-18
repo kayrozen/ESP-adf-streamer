@@ -59,6 +59,7 @@ static void monitor_task(void *arg)
 
 void monitor_start(void)
 {
+    if (!s_monitor_mutex) { ESP_LOGE(TAG, "monitor_init() not called"); return; }
     xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
     if (s_monitor_task) {
         ESP_LOGW(TAG, "Monitor already running");
@@ -80,6 +81,7 @@ void monitor_start(void)
 
 void monitor_stop(void)
 {
+    if (!s_monitor_mutex) return;
     TaskHandle_t task = NULL;
     xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
     if (!s_monitor_task) {

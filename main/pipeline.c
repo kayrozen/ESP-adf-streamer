@@ -166,8 +166,8 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
 
     /* Connect A2DP to the peer speaker */
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
-             s_peer_bda[5], s_peer_bda[4], s_peer_bda[3],
-             s_peer_bda[2], s_peer_bda[1], s_peer_bda[0]);
+             s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
+             s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
     esp_a2d_source_connect(s_peer_bda);
 
     s_current_codec = PIPELINE_CODEC_MP3;

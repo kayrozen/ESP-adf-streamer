@@ -37,7 +37,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             break;
         }
         snprintf(bda_str, sizeof(bda_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 bda[5], bda[4], bda[3], bda[2], bda[1], bda[0]);
+                 bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
         ESP_LOGI(TAG, "Found device: %s", bda_str);
 
         /* Check EIR/UUIDs for A2DP sink (UUID 0x110B).
@@ -188,6 +188,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
     uint8_t discovery_duration_units = (uint8_t)(discovery_duration_s * 1000 / 1280);
     if (discovery_duration_units == 0) discovery_duration_units = 1;
     ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s, %d units)...", discovery_duration_s, discovery_duration_units);
+    xEventGroupClearBits(s_bt_event_group, BT_FOUND_BIT);
     ESP_ERROR_CHECK(esp_bt_gap_start_discovery(
         ESP_BT_INQ_MODE_GENERAL_INQUIRY,
         discovery_duration_units,

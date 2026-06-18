@@ -6,7 +6,8 @@
  * Edit WIFI_SSID / WIFI_PASS before flashing.
  * Stream URLs verified via https://www.radio-browser.info
  *
- * BT_PEER_ADDR: set to your Bluetooth speaker MAC address (LSB first).
+ * BT_PEER_ADDR: set to your Bluetooth speaker MAC address (MSB first —
+ * same order as printed on the device label, e.g. AA:BB:CC:DD:EE:FF).
  * Leave all zeros to enable scan mode (connects to first A2DP sink found).
  */
 
@@ -15,8 +16,9 @@
 #define WIFI_PASS   "YourHotspotPassword"
 
 /* ---------- Bluetooth speaker ---------- */
-/* MAC address of the target Bluetooth speaker, byte[0] = LSB.
- * Example: speaker at AA:BB:CC:DD:EE:FF → {0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}
+/* MAC address of the target Bluetooth speaker, byte[0] = MSB.
+ * Enter exactly as shown on the device label or in your phone's BT settings.
+ * Example: speaker at AA:BB:CC:DD:EE:FF → {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
  * Set all to 0 to scan and connect to first A2DP sink found. */
 #define BT_PEER_ADDR    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 #define BT_DEVICE_NAME  "ESP-ADF-Streamer"

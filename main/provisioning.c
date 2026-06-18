@@ -125,16 +125,18 @@ cleanup:
 
 static void provision_task(void *arg)
 {
-    uint8_t *data = malloc(UART_BUF_SIZE);
-    if (!data) {
-        ESP_LOGE(TAG, "Failed to allocate UART read buffer");
+    uint8_t *data     = malloc(UART_BUF_SIZE);
+    char    *line_buf = malloc(UART_BUF_SIZE);
+    if (!data || !line_buf) {
+        ESP_LOGE(TAG, "Failed to allocate UART buffers");
+        free(data);
+        free(line_buf);
         s_provision_running = false;
         xSemaphoreGive(s_provision_done);
         vTaskDelete(NULL);
         return;
     }
 
-    char line_buf[UART_BUF_SIZE];
     size_t line_pos = 0;
 
     ESP_LOGI(TAG, "Provisioning task started, listening on UART%d", UART_PORT_NUM);
@@ -164,13 +166,14 @@ static void provision_task(void *arg)
                     }
                     line_pos = 0;
                 }
-            } else if (line_pos < sizeof(line_buf) - 1) {
+            } else if (line_pos < UART_BUF_SIZE - 1) {
                 line_buf[line_pos++] = c;
             }
         }
     }
 
     free(data);
+    free(line_buf);
     ESP_LOGI(TAG, "Provisioning task ended");
     xSemaphoreGive(s_provision_done);
     vTaskDelete(NULL);
