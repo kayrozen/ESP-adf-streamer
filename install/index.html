@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP-ADF Streamer — Install</title>
+
+  <!-- ESP Web Tools: WebSerial-based browser flashing -->
+  <script type="module" src="https://unpkg.com/esp-web-tools@9/dist/web/install-button.js"></script>
+
+  <style>
+    :root {
+      --accent: #e8232a;
+      --bg: #0f0f10;
+      --card: #1a1a1c;
+      --border: #2e2e30;
+      --text: #e2e2e5;
+      --muted: #8a8a90;
+      --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+
+    main {
+      max-width: 560px;
+      width: 100%;
+    }
+
+    .badge {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 3px;
+      margin-bottom: 1rem;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.4rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .card h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.9rem;
+    }
+
+    .card ol, .card ul {
+      padding-left: 1.2rem;
+    }
+
+    .card li {
+      font-size: 0.9rem;
+      line-height: 1.7;
+      color: var(--text);
+    }
+
+    .card li + li {
+      margin-top: 0.3rem;
+    }
+
+    code {
+      font-family: var(--mono);
+      background: #2a2a2e;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }
+
+    .install-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    esp-web-install-button {
+      --esp-tools-button-color: var(--accent);
+      --esp-tools-button-text-color: #fff;
+    }
+
+    /* Style the default button slot */
+    esp-web-install-button::part(button) {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      padding: 0.7rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    esp-web-install-button::part(button):hover {
+      opacity: 0.85;
+    }
+
+    .warning {
+      background: #2a1f00;
+      border: 1px solid #4a3800;
+      border-radius: 7px;
+      padding: 0.8rem 1rem;
+      font-size: 0.85rem;
+      color: #d4a820;
+      line-height: 1.5;
+    }
+
+    .warning strong { color: #f0c030; }
+
+    .footer {
+      margin-top: 2rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .footer a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .footer a:hover { color: var(--text); }
+
+    .chip-tag {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+      background: #1f1f22;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <span class="badge">Prototype</span>
+    <h1>ESP-ADF Streamer</h1>
+    <p class="subtitle">
+      Radio internet (HLS / Icecast) → décodage embarqué → Bluetooth A2DP source
+    </p>
+
+    <!-- Requirements card -->
+    <div class="card">
+      <h2>Avant de flasher</h2>
+      <ol>
+        <li>Connectez l'ESP32 via un <strong>câble USB de données</strong> (pas seulement de charge)</li>
+        <li>Utilisez <strong>Chrome ou Edge</strong> — WebSerial est requis (pas Firefox)</li>
+        <li>
+          Sur Linux : ajoutez-vous au groupe <code>dialout</code> si le port n'est pas accessible
+          <br><code>sudo usermod -aG dialout $USER</code>
+        </li>
+        <li>
+          Matériel cible : <strong>ESP32-WROVER</strong> (TTGO T7 Mini32 V1.5 ou WROVER-E-N8R8)
+          — 8 MB PSRAM requis
+        </li>
+      </ol>
+    </div>
+
+    <!-- Flash card -->
+    <div class="card">
+      <h2>Flash</h2>
+      <div class="install-wrap">
+        <div class="chip-tag">ESP32 · 16 MB Flash · 8 MB PSRAM</div>
+
+        <esp-web-install-button manifest="manifest.json">
+          <!-- Customize slot buttons if needed -->
+        </esp-web-install-button>
+
+        <div class="warning">
+          <strong>Note prototype :</strong> les credentials WiFi (<code>WIFI_SSID</code>,
+          <code>WIFI_PASS</code>) et l'adresse Bluetooth (<code>BT_PEER_ADDR</code>)
+          sont compilés dans le firmware via <code>station_config.h</code>.
+          Ce firmware de prototype ne contient pas de portail de configuration.
+        </div>
+      </div>
+    </div>
+
+    <!-- After flash card -->
+    <div class="card">
+      <h2>Après le flash</h2>
+      <ul>
+        <li>Ouvrez un moniteur série à <code>115200 baud</code> pour voir les logs</li>
+        <li>Vérifiez que le log affiche <code>SPIRAM: &gt;1MB</code> (PSRAM détectée)</li>
+        <li>Le firmware se connecte au WiFi, scanne les speakers Bluetooth, et démarre le stream MP3</li>
+        <li>Consultez les logs <code>monitor</code> toutes les 30s pour les métriques Phase C</li>
+      </ul>
+    </div>
+
+    <footer class="footer">
+      <span>ESP-ADF Streamer — prototype d'architecture</span>
+      <a href="https://github.com/kayrozen/ESP-adf-streamer" target="_blank" rel="noopener">
+        GitHub ↗
+      </a>
+    </footer>
+  </main>
+</body>
+</html>

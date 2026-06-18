@@ -1,0 +1,151 @@
+name: Build & Deploy
+
+# Builds firmware on every push and PR.
+# On push to main, also deploys the ESP Web Tools install page to GitHub Pages.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  # ESP-ADF release to build against.
+  # Update this when upgrading the framework — also update IDF container tag below.
+  ADF_VERSION: release/v2.7
+  ADF_PATH: /opt/esp-adf
+  # Firmware output name matches project() in CMakeLists.txt
+  FW_BIN: esp-adf-streamer.bin
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: Compile firmware inside the official Espressif IDF Docker container.
+  # Container ships with IDF v5.3.1 toolchain + Python packages pre-installed.
+  # We clone ESP-ADF components on top and cache them between runs.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Firmware (ESP32-WROVER)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.3.1
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Cache the ADF components directory. The cache key includes:
+      #   - ADF branch name
+      #   - this workflow file hash (bumps cache when CI config changes)
+      - name: Cache ESP-ADF components
+        id: cache-adf
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ADF_PATH }}
+          key: esp-adf-${{ env.ADF_VERSION }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            esp-adf-${{ env.ADF_VERSION }}-
+
+      - name: Clone ESP-ADF
+        if: steps.cache-adf.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch "$ADF_VERSION" \
+            https://github.com/espressif/esp-adf.git "$ADF_PATH"
+          cd "$ADF_PATH"
+          # Init only the components/ subtree — the container already has IDF,
+          # so we skip ADF's bundled esp-idf submodule (saves ~500MB and 3min).
+          git submodule update --init --recursive --depth=1 -- components/
+
+      - name: Point ADF at the container's IDF
+        # ADF expects $ADF_PATH/esp-idf to exist; symlink it to the container's IDF
+        # so version resolution works without duplicating the full IDF clone.
+        run: ln -sfn "$IDF_PATH" "$ADF_PATH/esp-idf"
+
+      - name: Set build target (ESP32)
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py set-target esp32
+
+      - name: Build firmware
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py build 2>&1 | tee /tmp/build.log
+          # Propagate build exit code through tee
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Print binary sizes
+        if: always()
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py size --format table || true
+
+      - name: Collect artifacts
+        # Gather the three binaries needed to flash a blank device,
+        # plus the map file and sdkconfig snapshot for debugging.
+        run: |
+          mkdir -p artifacts
+          cp "build/$FW_BIN"                            artifacts/firmware.bin
+          cp build/bootloader/bootloader.bin            artifacts/bootloader.bin
+          cp build/partition_table/partition-table.bin  artifacts/partition-table.bin
+          cp build/"${FW_BIN%.bin}".map                 artifacts/firmware.map || true
+          cp sdkconfig                                  artifacts/sdkconfig.snapshot
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32-wrover
+          retention-days: 30
+          path: artifacts/
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: Publish the ESP Web Tools install page to GitHub Pages.
+  # Runs only on pushes to main (not on PRs) after a successful build.
+  # The page allows flashing the device directly from a browser via WebSerial.
+  # ─────────────────────────────────────────────────────────────────────────────
+  pages:
+    name: Deploy install page
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp32-wrover
+          path: firmware/
+
+      - name: Assemble site
+        env:
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p _site
+          # Install page HTML
+          cp install/index.html _site/index.html
+          # Firmware binaries (served alongside the page)
+          cp firmware/firmware.bin          _site/firmware.bin
+          cp firmware/bootloader.bin        _site/bootloader.bin
+          cp firmware/partition-table.bin   _site/partition-table.bin
+          # Inject git short SHA as the displayed version
+          SHORT="${SHORT_SHA:0:7}"
+          sed "s/{{VERSION}}/$SHORT/g" install/manifest.json > _site/manifest.json
+          echo "Site contents:"
+          ls -lh _site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
