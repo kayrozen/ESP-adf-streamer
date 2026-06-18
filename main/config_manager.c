@@ -19,9 +19,10 @@ static void parse_mac(const char *str, uint8_t out[6])
     unsigned v[6] = {0};
     if (sscanf(str, "%x:%x:%x:%x:%x:%x",
                &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
-        /* Input is MSB-first (AA:BB:CC:DD:EE:FF), but ESP32 needs LSB-first.
-         * Reverse: out[0] = v[5] (LSB), out[5] = v[0] (MSB) */
-        for (int i = 0; i < 6; i++) out[i] = (uint8_t)v[5 - i];
+        /* Input is MSB-first (AA:BB:CC:DD:EE:FF).
+         * Bluedroid/ESP32 expects MSB-first byte order for BDA.
+         * Keep as-is: out[0] = v[0] (MSB), out[5] = v[5] (LSB). */
+        for (int i = 0; i < 6; i++) out[i] = (uint8_t)v[i];
     }
 }
 

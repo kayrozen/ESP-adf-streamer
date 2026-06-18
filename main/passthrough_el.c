@@ -14,7 +14,13 @@ typedef struct {
 
 static esp_err_t passthrough_open(audio_element_handle_t el)
 {
+    if (!el) {
+        return ESP_ERR_INVALID_ARG;
+    }
     passthrough_ctx_t *ctx = audio_element_getdata(el);
+    if (!ctx) {
+        return ESP_ERR_INVALID_ARG;
+    }
     memset(&ctx->stats, 0, sizeof(ctx->stats));
     ESP_LOGI(TAG, "opened");
     return ESP_OK;

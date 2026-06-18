@@ -3,12 +3,14 @@
 #include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/uart.h"
 #include "config_manager.h"
+#include "cJSON.h"
 
 static const char *TAG = "provision";
 
@@ -19,6 +21,7 @@ static const char *TAG = "provision";
 
 static TaskHandle_t s_provision_task = NULL;
 static volatile bool s_provision_running = false;
+static SemaphoreHandle_t s_provision_done = NULL;
 
 static esp_err_t provision_save_config(const char *ssid, const char *pass, const char *btmac)
 {
@@ -69,64 +72,39 @@ static esp_err_t provision_save_config(const char *ssid, const char *pass, const
 
 static void provision_parse_and_save(const char *json_str)
 {
-    /* Simple JSON parser for {"ssid":"...","pass":"...","btmac":"..."} */
-    char ssid[64] = {0};
-    char pass[64] = {0};
-    char btmac[18] = {0};
+    char *ssid = NULL;
+    char *pass = NULL;
+    char *btmac = NULL;
 
-    const char *p = json_str;
-
-    /* Find ssid */
-    p = strstr(p, "\"ssid\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) {
-            p = strchr(p + 1, '"');
-            if (p) {
-                const char *end = strchr(p + 1, '"');
-                if (end && (end - p - 1) < sizeof(ssid)) {
-                    strncpy(ssid, p + 1, end - p - 1);
-                }
-            }
-        }
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) {
+        ESP_LOGE(TAG, "Failed to parse JSON: %s", cJSON_GetErrorPtr());
+        uart_write_bytes(UART_PORT_NUM, "ERROR:JSON parse failed\n", 24);
+        goto cleanup;
     }
 
-    /* Find pass */
-    p = strstr(json_str, "\"pass\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) {
-            p = strchr(p + 1, '"');
-            if (p) {
-                const char *end = strchr(p + 1, '"');
-                if (end && (end - p - 1) < sizeof(pass)) {
-                    strncpy(pass, p + 1, end - p - 1);
-                }
-            }
-        }
+    cJSON *ssid_item = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    if (ssid_item && cJSON_IsString(ssid_item) && ssid_item->valuestring) {
+        ssid = strdup(ssid_item->valuestring);
     }
 
-    /* Find btmac */
-    p = strstr(json_str, "\"btmac\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) {
-            p = strchr(p + 1, '"');
-            if (p) {
-                const char *end = strchr(p + 1, '"');
-                if (end && (end - p - 1) < sizeof(btmac)) {
-                    strncpy(btmac, p + 1, end - p - 1);
-                }
-            }
-        }
+    cJSON *pass_item = cJSON_GetObjectItemCaseSensitive(root, "pass");
+    if (pass_item && cJSON_IsString(pass_item) && pass_item->valuestring) {
+        pass = strdup(pass_item->valuestring);
     }
 
-    ESP_LOGI(TAG, "Parsed: ssid='%s' pass='%s' btmac='%s'", ssid, pass[0] ? "***" : "", btmac);
+    cJSON *btmac_item = cJSON_GetObjectItemCaseSensitive(root, "btmac");
+    if (btmac_item && cJSON_IsString(btmac_item) && btmac_item->valuestring) {
+        btmac = strdup(btmac_item->valuestring);
+    }
+
+    ESP_LOGI(TAG, "Parsed: ssid='%s' pass='%s' btmac='%s'",
+             ssid ? ssid : "", pass ? "***" : "", btmac ? btmac : "");
 
     esp_err_t ret = provision_save_config(
-        ssid[0] ? ssid : NULL,
-        pass[0] ? pass : "",
-        btmac[0] ? btmac : NULL
+        ssid ? ssid : NULL,
+        pass ? pass : "",
+        btmac ? btmac : NULL
     );
 
     if (ret == ESP_OK) {
@@ -136,6 +114,12 @@ static void provision_parse_and_save(const char *json_str)
         snprintf(err_msg, sizeof(err_msg), "ERROR:%d\n", ret);
         uart_write_bytes(UART_PORT_NUM, err_msg, strlen(err_msg));
     }
+
+cleanup:
+    if (ssid) free(ssid);
+    if (pass) free(pass);
+    if (btmac) free(btmac);
+    cJSON_Delete(root);
 }
 
 static void provision_task(void *arg)
@@ -144,6 +128,7 @@ static void provision_task(void *arg)
     if (!data) {
         ESP_LOGE(TAG, "Failed to allocate UART read buffer");
         s_provision_running = false;
+        xSemaphoreGive(s_provision_done);
         vTaskDelete(NULL);
         return;
     }
@@ -186,6 +171,7 @@ static void provision_task(void *arg)
 
     free(data);
     ESP_LOGI(TAG, "Provisioning task ended");
+    xSemaphoreGive(s_provision_done);
     vTaskDelete(NULL);
 }
 
@@ -194,6 +180,14 @@ esp_err_t provisioning_start(void)
     if (s_provision_running) {
         ESP_LOGW(TAG, "Already running");
         return ESP_OK;
+    }
+
+    if (!s_provision_done) {
+        s_provision_done = xSemaphoreCreateBinary();
+        if (!s_provision_done) {
+            ESP_LOGE(TAG, "Failed to create provisioning done semaphore");
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     /* Install UART driver */
@@ -225,9 +219,15 @@ esp_err_t provisioning_start(void)
 
 void provisioning_stop(void)
 {
+    if (!s_provision_running && !s_provision_task) {
+        return;
+    }
     s_provision_running = false;
     if (s_provision_task) {
-        vTaskDelete(s_provision_task);
+        /* Wait for task to clean up and signal done (with timeout) */
+        if (s_provision_done) {
+            xSemaphoreTake(s_provision_done, pdMS_TO_TICKS(1000));
+        }
         s_provision_task = NULL;
     }
     uart_driver_delete(UART_PORT_NUM);
