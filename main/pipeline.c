@@ -64,7 +64,7 @@ static audio_element_handle_t create_aac_decoder(void)
     aac_decoder_cfg_t cfg = DEFAULT_AAC_DECODER_CONFIG();
     cfg.task_core         = 0;
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = 8 * 1024;   /* ~46 ms PCM buffer at 44.1kHz stereo — needed to absorb A2DP jitter */
+    cfg.out_rb_size       = 4 * 1024;   /* halve default to save internal DRAM; passthrough_el out_rb handles A2DP jitter */
     return aac_decoder_init(&cfg);
 }
 
