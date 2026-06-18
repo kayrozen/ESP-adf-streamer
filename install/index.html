@@ -248,8 +248,11 @@ async function sendProvision(creds, logEl, statusEl, requestNew) {
     }
 
     await port.open({ baudRate: 115200 });
-    const decoded = port.readable.pipeThrough(new TextDecoderStream());
-    reader = decoded.getReader();
+    /* Use getReader() directly — pipeThrough(TextDecoderStream) keeps
+     * port.readable locked. cancel() + releaseLock() are both required
+     * before port.close() can succeed. */
+    const rxDecoder = new TextDecoder();
+    reader = port.readable.getReader();
     writer = port.writable.getWriter();
 
     logTo(logEl, "info", "Serial port open — waiting for device boot…");
@@ -271,7 +274,7 @@ async function sendProvision(creds, logEl, statusEl, requestNew) {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buf += value;
+        buf += rxDecoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop();          /* retain incomplete trailing segment */
         for (const raw of lines) {
@@ -301,9 +304,15 @@ async function sendProvision(creds, logEl, statusEl, requestNew) {
     statusEl.className = "status-bar err";
     statusEl.textContent = "Error: " + err.message;
   } finally {
-    try { await reader?.cancel(); } catch {}
-    try { await writer?.close(); } catch {}
-    try { await port?.close();   } catch {}
+    if (reader) {
+      try { await reader.cancel(); } catch {}
+      try { reader.releaseLock();  } catch {}
+    }
+    if (writer) {
+      try { await writer.close();  } catch {}
+      try { writer.releaseLock();  } catch {}
+    }
+    try { await port?.close(); } catch {}
   }
 }
 
