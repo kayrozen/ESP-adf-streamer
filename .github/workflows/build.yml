@@ -75,7 +75,10 @@ jobs:
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: Print binary sizes
-        if: always()
+        # Only runs on successful build — idf.py size needs the .map file
+        # produced by the linker. if:success() is the implicit default but
+        # we make it explicit to document why this must not run on failure.
+        if: success()
         run: |
           . "$IDF_PATH/export.sh"
           idf.py size || true
