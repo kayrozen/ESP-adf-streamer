@@ -8,6 +8,7 @@
 #include "http_stream.h"
 #include "mp3_decoder.h"
 #include "aac_decoder.h"
+#include "esp_peripherals.h"  /* must precede a2dp_stream.h (defines esp_periph_handle_t) */
 #include "a2dp_stream.h"
 #include "esp_a2dp_api.h"
 #include "passthrough_el.h"
@@ -46,6 +47,9 @@ static audio_element_handle_t create_mp3_decoder(void)
     return mp3_decoder_init(&cfg);
 }
 
+/* create_aac_decoder is used for Phase B step 2 (AAC Icecast test).
+ * Suppress unused-function warning — it will be wired in when testing AAC. */
+static audio_element_handle_t create_aac_decoder(void) __attribute__((unused));
 static audio_element_handle_t create_aac_decoder(void)
 {
     aac_decoder_cfg_t cfg = DEFAULT_AAC_DECODER_CONFIG();
@@ -54,12 +58,15 @@ static audio_element_handle_t create_aac_decoder(void)
     return aac_decoder_init(&cfg);
 }
 
-static audio_element_handle_t create_a2dp_stream(const uint8_t peer_bda[6])
+static audio_element_handle_t create_a2dp_stream(void)
 {
-    a2dp_stream_cfg_t cfg = A2DP_STREAM_CFG_DEFAULT();
-    cfg.type              = AUDIO_STREAM_WRITER;   /* A2DP source */
-    cfg.task_stack        = 4 * 1024;
-    cfg.task_prio         = 23;
+    /* ADF v2.8: type is a2dp_stream_config_t; no A2DP_STREAM_CFG_DEFAULT macro.
+     * task_stack / task_prio are not fields of this struct. */
+    a2dp_stream_config_t cfg = {
+        .type          = AUDIO_STREAM_WRITER,  /* source: we push PCM to BT */
+        .user_callback = { 0 },
+        .audio_hal     = NULL,
+    };
     return a2dp_stream_init(&cfg);
 }
 
@@ -80,7 +87,7 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     /* Default decoder: MP3. pipeline_start() can swap for AAC/HLS. */
     s_decoder_el  = create_mp3_decoder();
     s_passthrough = passthrough_el_init();
-    s_a2dp_el     = create_a2dp_stream(peer_bda);
+    s_a2dp_el     = create_a2dp_stream();
 
     audio_pipeline_register(s_pipeline, s_http_el,     "http");
     audio_pipeline_register(s_pipeline, s_decoder_el,  "dec");

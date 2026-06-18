@@ -69,7 +69,9 @@ static void run_event_loop(void)
     }
 }
 
-/* Phase D — hot station change, keeps A2DP alive */
+/* Phase D — hot station change, keeps A2DP alive.
+ * Only compiled when rotation is enabled to avoid unused-function error. */
+#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
 static esp_err_t switch_to_station(int idx)
 {
     if (idx < 0 || idx >= NUM_TEST_STATIONS) return ESP_ERR_INVALID_ARG;
@@ -81,6 +83,7 @@ static esp_err_t switch_to_station(int idx)
     ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", elapsed_ms);
     return ret;
 }
+#endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
 
 void app_main(void)
 {

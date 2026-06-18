@@ -31,20 +31,24 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  bda[5], bda[4], bda[3], bda[2], bda[1], bda[0]);
         ESP_LOGI(TAG, "Found device: %s", bda_str);
 
-        /* Check EIR/UUIDs for A2DP sink (UUID 0x110B) */
+        /* Check EIR/UUIDs for A2DP sink (UUID 0x110B).
+         * IDF 5.x: esp_bt_gap_resolve_eir_data() returns a pointer to the
+         * UUID list (or NULL) and writes the byte-length into rlen. */
         for (int i = 0; i < param->disc_res.num_prop; i++) {
             esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
             if (p->type == ESP_BT_GAP_DEV_PROP_EIR) {
-                uint8_t *eir = p->val;
-                uint8_t uuid[4];
-                uint8_t rlen;
-                if (esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_INCMPL_16BITS_UUID,
-                                                &rlen, uuid) ||
-                    esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_CMPL_16BITS_UUID,
-                                                &rlen, uuid)) {
+                uint8_t *eir  = p->val;
+                uint8_t  rlen = 0;
+                uint8_t *uuids = esp_bt_gap_resolve_eir_data(
+                    eir, ESP_BT_EIR_TYPE_INCMPL_16BITS_UUID, &rlen);
+                if (!uuids) {
+                    uuids = esp_bt_gap_resolve_eir_data(
+                        eir, ESP_BT_EIR_TYPE_CMPL_16BITS_UUID, &rlen);
+                }
+                if (uuids) {
                     /* 0x110B = A2DP Sink */
                     for (int j = 0; j + 1 < rlen; j += 2) {
-                        uint16_t u = uuid[j] | (uuid[j + 1] << 8);
+                        uint16_t u = uuids[j] | (uuids[j + 1] << 8);
                         if (u == 0x110B) {
                             ESP_LOGI(TAG, "A2DP Sink found: %s", bda_str);
                             memcpy(s_peer_bda, bda, 6);
@@ -121,7 +125,7 @@ esp_err_t bt_manager_init(const char *device_name)
     ESP_ERROR_CHECK(esp_a2d_register_callback(a2dp_callback));
     ESP_ERROR_CHECK(esp_a2d_source_init());
 
-    esp_bt_dev_set_device_name(device_name);
+    esp_bt_gap_set_device_name(device_name);
 
     /* Make discoverable + connectable */
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
