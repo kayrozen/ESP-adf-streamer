@@ -111,6 +111,10 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 esp_err_t bt_manager_init(const char *device_name)
 {
     s_bt_event_group = xEventGroupCreate();
+    if (!s_bt_event_group) {
+        ESP_LOGE(TAG, "Failed to create BT event group");
+        return ESP_ERR_NO_MEM;
+    }
 
     /* Release BLE memory — we only use Classic BT */
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
@@ -136,6 +140,11 @@ esp_err_t bt_manager_init(const char *device_name)
 
 esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
 {
+    if (!peer_bda) {
+        ESP_LOGE(TAG, "peer_bda cannot be NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     static const uint8_t zero_bda[6] = {0};
 
     /* If a non-zero address was provided, use it directly */

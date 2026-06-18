@@ -32,6 +32,10 @@ static int s_current_station = 0;
 static void run_event_loop(void)
 {
     audio_event_iface_handle_t evt = pipeline_get_event_iface();
+    if (!evt) {
+        ESP_LOGE(TAG, "Event interface is NULL — pipeline did not initialize");
+        return;
+    }
 
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {

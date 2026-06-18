@@ -84,10 +84,20 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     }
 
     s_http_el     = create_http_stream();
-    /* Default decoder: MP3. pipeline_start() can swap for AAC/HLS. */
     s_decoder_el  = create_mp3_decoder();
     s_passthrough = passthrough_el_init();
     s_a2dp_el     = create_a2dp_stream();
+
+    if (!s_http_el || !s_decoder_el || !s_passthrough || !s_a2dp_el) {
+        ESP_LOGE(TAG, "Failed to create one or more pipeline elements");
+        if (s_http_el)    audio_element_deinit(s_http_el);
+        if (s_decoder_el) audio_element_deinit(s_decoder_el);
+        if (s_passthrough)audio_element_deinit(s_passthrough);
+        if (s_a2dp_el)    audio_element_deinit(s_a2dp_el);
+        audio_pipeline_deinit(s_pipeline);
+        s_pipeline = NULL;
+        return ESP_FAIL;
+    }
 
     audio_pipeline_register(s_pipeline, s_http_el,     "http");
     audio_pipeline_register(s_pipeline, s_decoder_el,  "dec");

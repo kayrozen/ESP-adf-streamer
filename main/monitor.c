@@ -18,14 +18,16 @@ static void monitor_task(void *arg)
 {
     char *stats_buf = heap_caps_malloc(STATS_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!stats_buf) {
-        /* Fallback to internal heap */
         stats_buf = malloc(STATS_BUF_SIZE);
     }
 
-    TickType_t last_wake = xTaskGetTickCount();
-
     while (s_running) {
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(MONITOR_INTERVAL_S * 1000));
+        /* Sleep for the interval, but wake immediately if notified by monitor_stop().
+         * ulTaskNotifyTake returns > 0 when woken by a notification (stop signal). */
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MONITOR_INTERVAL_S * 1000)) > 0) {
+            break;
+        }
+        if (!s_running) break;
 
         size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         size_t free_spiram   = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -45,6 +47,9 @@ static void monitor_task(void *arg)
     }
 
     if (stats_buf) free(stats_buf);
+    /* Clear handle inside the task so monitor_start() can't race with a
+     * still-running task after monitor_stop() returns. */
+    s_monitor_task = NULL;
     vTaskDelete(NULL);
 }
 
@@ -59,6 +64,9 @@ void monitor_start(void)
 
 void monitor_stop(void)
 {
-    s_running = false;
-    s_monitor_task = NULL;
+    if (s_monitor_task) {
+        s_running = false;
+        xTaskNotifyGive(s_monitor_task);
+        /* handle is cleared by the task itself before it deletes itself */
+    }
 }

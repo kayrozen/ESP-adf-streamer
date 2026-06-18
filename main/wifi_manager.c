@@ -41,6 +41,10 @@ esp_err_t wifi_manager_init(void)
     if (s_initialized) return ESP_OK;
 
     s_wifi_event_group = xEventGroupCreate();
+    if (!s_wifi_event_group) {
+        ESP_LOGE(TAG, "Failed to create WiFi event group");
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -61,6 +65,11 @@ esp_err_t wifi_manager_init(void)
 
 esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
 {
+    if (!ssid) {
+        ESP_LOGE(TAG, "SSID cannot be NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     wifi_config_t wifi_cfg = {0};
     strlcpy((char *)wifi_cfg.sta.ssid,     ssid, sizeof(wifi_cfg.sta.ssid));
     strlcpy((char *)wifi_cfg.sta.password, pass ? pass : "",
