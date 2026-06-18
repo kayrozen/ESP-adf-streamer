@@ -103,7 +103,7 @@ audio_element_handle_t passthrough_el_init(void)
     cfg.close   = passthrough_close;
     cfg.destroy = passthrough_destroy;
     cfg.tag     = "passthrough";
-    cfg.task_stack = 2 * 1024;
+    cfg.task_stack = 4 * 1024;
     cfg.buffer_len = 2048;
 
     audio_element_handle_t el = audio_element_init(&cfg);

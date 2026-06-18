@@ -188,6 +188,9 @@ void app_main(void)
     }
 
     /* ---- Phase B / C: Pipeline init ---- */
+    ESP_LOGI(TAG, "Heap pre-pipeline: internal=%"PRIu32"B  SPIRAM=%"PRIu32"B",
+             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));  /* uses discovered/configured BDA */
 
     /* ---- Phase C: Resource monitoring ---- */
