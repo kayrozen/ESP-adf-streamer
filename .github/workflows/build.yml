@@ -78,7 +78,7 @@ jobs:
         if: always()
         run: |
           . "$IDF_PATH/export.sh"
-          idf.py size --format table || true
+          idf.py size || true
 
       - name: Collect artifacts
         # Gather the three binaries needed to flash a blank device,
