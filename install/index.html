@@ -249,7 +249,8 @@ async function sendProvision(creds, logEl, statusEl, requestNew) {
 
     await port.open({ baudRate: 115200 });
     /* Use getReader() directly — pipeThrough(TextDecoderStream) keeps
-     * port.readable locked after reader.cancel(), preventing port.close(). */
+     * port.readable locked. cancel() + releaseLock() are both required
+     * before port.close() can succeed. */
     const rxDecoder = new TextDecoder();
     reader = port.readable.getReader();
     writer = port.writable.getWriter();
@@ -303,9 +304,15 @@ async function sendProvision(creds, logEl, statusEl, requestNew) {
     statusEl.className = "status-bar err";
     statusEl.textContent = "Error: " + err.message;
   } finally {
-    try { await reader?.cancel(); } catch {}
-    try { await writer?.close(); } catch {}
-    try { await port?.close();   } catch {}
+    if (reader) {
+      try { await reader.cancel(); } catch {}
+      try { reader.releaseLock();  } catch {}
+    }
+    if (writer) {
+      try { await writer.close();  } catch {}
+      try { writer.releaseLock();  } catch {}
+    }
+    try { await port?.close(); } catch {}
   }
 }
 
