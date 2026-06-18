@@ -167,19 +167,18 @@ void app_main(void)
     ESP_ERROR_CHECK(pipeline_start(TEST_STATIONS[0].url));
     ESP_LOGI(TAG, "Pipeline start latency: %" PRId64 " ms",
              (esp_timer_get_time() - t_start) / 1000);
-
     /*
      * Phase D smoke test — switch all stations in order after 60s each.
      * Comment this block out to stay on one station for Phase C endurance tests.
-     /* ---- Main event loop ---- */
-     #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
-     /* Start Phase D rotation in a separate task so event loop stays responsive */
-     ESP_LOGI(TAG, "Phase D: station rotation enabled");
-     xTaskCreatePinnedToCore(rotation_task, "phase_d_rot", 4 * 1024, NULL, 5, NULL, 1);
-     #endif
+     */
+    /* ---- Main event loop ---- */
+    #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+    /* Start Phase D rotation in a separate task so event loop stays responsive */
+    ESP_LOGI(TAG, "Phase D: station rotation enabled");
+    xTaskCreatePinnedToCore(rotation_task, "phase_d_rot", 4 * 1024, NULL, 5, NULL, 1);
+    #endif
 
-     run_event_loop();
-
+    run_event_loop();
     /* Not reached in normal operation */
     pipeline_deinit();
 }
