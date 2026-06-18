@@ -1,11 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ESP-ADF Streamer — Install</title>
-
-  <!-- ESP Web Tools: WebSerial-based browser flashing -->
   <script type="module" src="https://unpkg.com/esp-web-tools@9/dist/web/install-button.js"></script>
 
   <style>
@@ -16,27 +14,20 @@
       --border: #2e2e30;
       --text: #e2e2e5;
       --muted: #8a8a90;
-      --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+      --mono: "JetBrains Mono", "Fira Code", monospace;
     }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
       padding: 2rem 1rem;
     }
-
-    main {
-      max-width: 560px;
-      width: 100%;
-    }
-
+    main { max-width: 560px; width: 100%; }
     .badge {
       display: inline-block;
       background: var(--accent);
@@ -49,20 +40,8 @@
       border-radius: 3px;
       margin-bottom: 1rem;
     }
-
-    h1 {
-      font-size: 1.8rem;
-      font-weight: 700;
-      line-height: 1.2;
-      margin-bottom: 0.4rem;
-    }
-
-    .subtitle {
-      color: var(--muted);
-      font-size: 0.95rem;
-      margin-bottom: 2rem;
-    }
-
+    h1 { font-size: 1.8rem; font-weight: 700; line-height: 1.2; margin-bottom: 0.4rem; }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
@@ -70,30 +49,14 @@
       padding: 1.5rem;
       margin-bottom: 1.25rem;
     }
-
-    .card h2 {
-      font-size: 0.8rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--muted);
-      margin-bottom: 0.9rem;
+      margin-bottom: 1rem;
     }
-
-    .card ol, .card ul {
-      padding-left: 1.2rem;
-    }
-
-    .card li {
-      font-size: 0.9rem;
-      line-height: 1.7;
-      color: var(--text);
-    }
-
-    .card li + li {
-      margin-top: 0.3rem;
-    }
-
     code {
       font-family: var(--mono);
       background: #2a2a2e;
@@ -101,108 +64,12 @@
       border-radius: 3px;
       font-size: 0.85em;
     }
-
-    /* Config form */
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 0.3rem;
-      margin-bottom: 0.9rem;
-    }
-
-    .field label {
-      font-size: 0.8rem;
-      font-weight: 600;
-      color: var(--muted);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .field input {
-      background: #111113;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-size: 0.9rem;
-      font-family: inherit;
-      padding: 0.55rem 0.75rem;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-
-    .field input:focus {
-      border-color: var(--accent);
-    }
-
-    .field input::placeholder {
-      color: #55555a;
-    }
-
-    .field .hint {
-      font-size: 0.75rem;
-      color: var(--muted);
-    }
-
-    .field input.invalid {
-      border-color: #c43030;
-    }
-
-    .field .err {
-      font-size: 0.75rem;
-      color: #e05050;
-      display: none;
-    }
-
-    .field.has-error .err { display: block; }
-    .field.has-error input { border-color: #c43030; }
-
-    /* Button styles */
-    .btn {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 7px;
-      padding: 0.7rem 1.5rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s;
-      width: 100%;
-    }
-
-    .btn:hover:not(:disabled) {
-      opacity: 0.85;
-    }
-
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .btn.secondary {
-      background: #2a2a2e;
-      color: var(--text);
-    }
-
-    .btn.secondary:hover:not(:disabled) {
-      background: #3a3a3e;
-    }
-
-    /* Install section */
-    .install-wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 1rem;
-      width: 100%;
-    }
-
+    /* Flash button */
     esp-web-install-button {
       --esp-tools-button-color: var(--accent);
       --esp-tools-button-text-color: #fff;
       width: 100%;
     }
-
     esp-web-install-button::part(button) {
       background: var(--accent);
       color: #fff;
@@ -212,515 +79,298 @@
       font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
-      transition: opacity 0.15s;
       width: 100%;
     }
-
-    esp-web-install-button::part(button):hover {
-      opacity: 0.85;
-    }
-
-    .warning {
-      background: #2a1f00;
-      border: 1px solid #4a3800;
-      border-radius: 7px;
-      padding: 0.8rem 1rem;
-      font-size: 0.85rem;
-      color: #d4a820;
+    esp-web-install-button::part(button):hover { opacity: 0.85; }
+    .flash-note {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.75rem;
       line-height: 1.5;
-      width: 100%;
     }
-
-    .warning strong { color: #f0c030; }
-
-    .config-status {
+    /* Form */
+    .field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.9rem; }
+    .field label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .field input {
+      background: #111113;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+      padding: 0.6rem 0.75rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field input::placeholder { color: #55555a; }
+    .field .hint { font-size: 0.75rem; color: var(--muted); }
+    .field.has-error input { border-color: #c43030; }
+    .field .err { font-size: 0.75rem; color: #e05050; display: none; }
+    .field.has-error .err { display: block; }
+    /* Buttons */
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      padding: 0.75rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: opacity 0.15s;
+      margin-top: 0.25rem;
+    }
+    .btn:hover:not(:disabled) { opacity: 0.85; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.done { background: #2a4a2a; color: #5cba5c; cursor: default; }
+    /* Status bar */
+    .status-bar {
       font-size: 0.82rem;
-      padding: 0.5rem 0.8rem;
+      padding: 0.55rem 0.8rem;
       border-radius: 6px;
       border: 1px solid var(--border);
       background: #111113;
       color: var(--muted);
-      width: 100%;
+      margin-bottom: 0.75rem;
     }
-
-    .config-status.ready {
-      border-color: #2a4a2a;
-      background: #0d1f0d;
-      color: #5cba5c;
-    }
-
-    .config-status.provisioning {
-      border-color: var(--accent);
-      background: #2a1515;
-      color: #e86060;
-    }
-
-    .provision-log {
+    .status-bar.ok  { border-color: #2a4a2a; background: #0d1f0d; color: #5cba5c; }
+    .status-bar.err { border-color: #4a1f1f; background: #1f0d0d; color: #e05050; }
+    .status-bar.busy { border-color: var(--accent); background: #2a1515; color: #e08060; }
+    /* Log */
+    .log {
       font-family: var(--mono);
       font-size: 0.75rem;
       background: #0a0a0c;
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 0.75rem;
-      max-height: 200px;
+      max-height: 180px;
       overflow-y: auto;
-      color: #8a8a90;
+      color: var(--muted);
       white-space: pre-wrap;
       word-break: break-word;
+      margin-top: 0.75rem;
+      display: none;
     }
-
-    .provision-log .sent { color: #5cba5c; }
-    .provision-log .received { color: #d4a820; }
-    .provision-log .error { color: #e05050; }
-    .provision-log .info { color: #5cba5c; }
-
+    .log .sent     { color: #5cba5c; }
+    .log .received { color: #d4a820; }
+    .log .err-line { color: #e05050; }
+    .log .info     { color: #6090c0; }
+    /* Footer */
     .footer {
-      margin-top: 2rem;
+      margin-top: 1.5rem;
       font-size: 0.78rem;
       color: var(--muted);
       display: flex;
       justify-content: space-between;
-      align-items: center;
       flex-wrap: wrap;
       gap: 0.5rem;
     }
-
-    .footer a {
-      color: var(--muted);
-      text-decoration: none;
-    }
-
+    .footer a { color: var(--muted); text-decoration: none; }
     .footer a:hover { color: var(--text); }
-
-    .chip-tag {
-      font-family: var(--mono);
-      font-size: 0.78rem;
-      color: var(--muted);
-      background: #1f1f22;
-      padding: 3px 8px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-    }
-
-    .hidden { display: none; }
-
-    /* Step indicator */
-    .step-indicator {
-      display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
-      justify-content: center;
-    }
-
-    .step {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0.25rem;
-      flex: 1;
-      padding: 0.5rem;
-      border-radius: 8px;
-      background: #1a1a1c;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      font-size: 0.75rem;
-    }
-
-    .step.active {
-      border-color: var(--accent);
-      background: #2a1515;
-      color: var(--accent);
-    }
-
-    .step.complete {
-      border-color: #2a4a2a;
-      background: #0d1f0d;
-      color: #5cba5c;
-    }
-
-    .step-number {
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 0.75rem;
-      background: var(--border);
-      color: var(--muted);
-    }
-
-    .step.active .step-number {
-      background: var(--accent);
-      color: #fff;
-    }
-
-    .step.complete .step-number {
-      background: #5cba5c;
-      color: #fff;
-    }
   </style>
 </head>
 <body>
-  <main>
-    <span class="badge">Prototype</span>
-    <h1>ESP-ADF Streamer</h1>
-    <p class="subtitle">
-      Radio internet (HLS / Icecast) → décodage embarqué → Bluetooth A2DP source
+<main>
+  <span class="badge">Prototype</span>
+  <h1>ESP-ADF Streamer</h1>
+  <p class="subtitle">Internet radio → ESP32 decode → Bluetooth A2DP speaker</p>
+
+  <!-- Step 1: Flash -->
+  <div class="card">
+    <div class="card-title">Step 1 — Flash firmware</div>
+    <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
+    <p class="flash-note">
+      Requires <strong>Chrome or Edge</strong> with the board connected via a data USB cable.<br>
+      Target: <strong>ESP32-WROVER</strong> (TTGO T7 Mini32 V1.5) · 16 MB flash · 8 MB PSRAM
+    </p>
+  </div>
+
+  <!-- Step 2: Configure + Provision (always visible) -->
+  <div class="card">
+    <div class="card-title">Step 2 — Configure &amp; Provision</div>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1.1rem;">
+      Fill in your WiFi and Bluetooth details, then click <strong>Provision via UART</strong>.
+      The page opens a Web Serial connection and sends the credentials to the device.
+      You can do this before or after flashing — the device listens on every boot.
     </p>
 
-    <!-- Step indicator -->
-    <div class="step-indicator" id="step-indicator">
-      <div class="step active" data-step="1">
-        <div class="step-number">1</div>
-        <span>Flasher</span>
-      </div>
-      <div class="step" data-step="2">
-        <div class="step-number">2</div>
-        <span>Configurer</span>
-      </div>
-      <div class="step" data-step="3">
-        <div class="step-number">3</div>
-        <span>Provisionner</span>
-      </div>
+    <div class="field" id="f-ssid">
+      <label for="inp-ssid">WiFi SSID</label>
+      <input id="inp-ssid" type="text" placeholder="MyNetwork" autocomplete="off" spellcheck="false" />
+      <span class="err">SSID is required when a password is set.</span>
     </div>
 
-    <!-- Requirements card -->
-    <div class="card">
-      <h2>Avant de flasher</h2>
-      <ol>
-        <li>Connectez l'ESP32 via un <strong>câble USB de données</strong> (pas seulement de charge)</li>
-        <li>Utilisez <strong>Chrome ou Edge</strong> — WebSerial est requis (pas Firefox)</li>
-        <li>
-          Sur Linux : ajoutez-vous au groupe <code>dialout</code> si le port n'est pas accessible
-          <br><code>sudo usermod -aG dialout $USER</code>
-        </li>
-        <li>
-          Matériel cible : <strong>ESP32-WROVER</strong> (TTGO T7 Mini32 V1.5 ou WROVER-E-N8R8)
-          — 8 MB PSRAM requis
-        </li>
-      </ol>
+    <div class="field" id="f-pass">
+      <label for="inp-pass">WiFi Password</label>
+      <input id="inp-pass" type="password" placeholder="(leave blank for open network)" autocomplete="new-password" />
     </div>
 
-    <!-- Step 1: Flash -->
-    <div class="card" id="step-1">
-      <h2>Étape 1 : Flash du firmware</h2>
-      <div class="install-wrap">
-        <div class="chip-tag">ESP32 · 16 MB Flash · 8 MB PSRAM</div>
-        <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
-      </div>
-      <p style="font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">
-        Le firmware inclut les valeurs par défaut compilées. La configuration WiFi/Bluetooth sera envoyée à l'étape 3.
-      </p>
+    <div class="field" id="f-mac">
+      <label for="inp-mac">Bluetooth Speaker MAC address</label>
+      <input id="inp-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF"
+             autocomplete="off" spellcheck="false" maxlength="17" />
+      <span class="hint">Exactly as printed on the speaker label. Leave blank to auto-scan.</span>
+      <span class="err">Invalid format. Example: A4:C1:38:01:02:03</span>
     </div>
 
-    <!-- Step 2: Configuration -->
-    <div class="card hidden" id="step-2">
-      <h2>Étape 2 : Configuration</h2>
-      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1rem;">
-        Remplissez ces champs — ils seront envoyés via UART (Web Serial) après le flash.
-      </p>
-
-      <div class="field" id="f-ssid">
-        <label for="inp-ssid">WiFi SSID</label>
-        <input id="inp-ssid" type="text" placeholder="MonReseau" autocomplete="off" spellcheck="false" />
-        <span class="err">SSID requis si un mot de passe est fourni.</span>
-      </div>
-
-      <div class="field" id="f-pass">
-        <label for="inp-pass">WiFi Password</label>
-        <input id="inp-pass" type="password" placeholder="••••••••" autocomplete="new-password" />
-      </div>
-
-      <div class="field" id="f-mac">
-        <label for="inp-mac">Adresse MAC Bluetooth (A2DP sink)</label>
-        <input id="inp-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"
-               pattern="^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$" spellcheck="false" maxlength="17" />
-        <span class="hint">Format : XX:XX:XX:XX:XX:XX — laisser vide pour scan automatique</span>
-        <span class="err">Format invalide. Exemple : A4:C1:38:01:02:03</span>
-      </div>
-
-      <div id="config-status" class="config-status">
-        Entrez votre configuration ci-dessus ou laissez vide pour utiliser les défauts compilés.
-      </div>
-
-      <button class="btn" id="provision-btn" disabled>Provisionner via UART</button>
+    <div id="status-bar" class="status-bar">
+      Enter your credentials above, then click Provision.
     </div>
 
-    <!-- Step 3: Provisioning -->
-    <div class="card hidden" id="step-3">
-      <h2>Étape 3 : Provisioning UART</h2>
-      <div class="warning">
-        <strong>Gardez l'appareil connecté.</strong> Le provisioning envoie la config via Web Serial (115200 baud).
-        Le firmware doit être en écoute sur l'UART pour recevoir la configuration.
-      </div>
-      <div id="provision-log" class="provision-log" style="display:none;"></div>
-    </div>
+    <button class="btn" id="provision-btn">Provision via UART</button>
+    <div id="prov-log" class="log"></div>
+  </div>
 
-    <!-- After flash card -->
-    <div class="card">
-      <h2>Après le flash</h2>
-      <ul>
-        <li>Ouvrez un moniteur série à <code>115200 baud</code> pour voir les logs</li>
-        <li>Vérifiez que le log affiche <code>SPIRAM: &gt;1MB</code> (PSRAM détectée)</li>
-        <li>Le firmware se connecte au WiFi, scanne les speakers Bluetooth, et démarre le stream MP3</li>
-        <li>Consultez les logs <code>monitor</code> toutes les 30s pour les métriques Phase C</li>
-      </ul>
-    </div>
-
-    <footer class="footer">
-      <span>ESP-ADF Streamer — prototype d'architecture</span>
-      <a href="https://github.com/kayrozen/ESP-adf-streamer" target="_blank" rel="noopener">
-        GitHub ↗
-      </a>
-    </footer>
-  </main>
+  <footer class="footer">
+    <span>ESP-ADF Streamer prototype</span>
+    <a href="https://github.com/kayrozen/ESP-adf-streamer" target="_blank" rel="noopener">GitHub ↗</a>
+  </footer>
+</main>
 
 <script>
-/* ─── UART Provisioning ───────────────────────────────────────────────────────
- * After flashing, we use Web Serial to send configuration to the device.
- * The device firmware should implement a simple line-based protocol:
- *   - Received: "PROVISION:{\"ssid\":\"...\",\"pass\":\"...\",\"btmac\":\"...\"}\\n"
- *   - Responds: "OK\\n" or "ERROR:reason\\n"
- *   - Device saves to NVS and reboots
- */
-
-const installBtn = document.getElementById("install-btn");
 const provisionBtn = document.getElementById("provision-btn");
-const statusEl = document.getElementById("config-status");
-const provisionLog = document.getElementById("provision-log");
-const steps = {
-  1: document.getElementById("step-1"),
-  2: document.getElementById("step-2"),
-  3: document.getElementById("step-3"),
-};
-const stepIndicators = document.querySelectorAll(".step-indicator .step");
+const statusBar    = document.getElementById("status-bar");
+const logEl        = document.getElementById("prov-log");
+const fSsid        = document.getElementById("f-ssid");
+const fMac         = document.getElementById("f-mac");
 
-let port = null;
-let reader = null;
-let writer = null;
-let keepReading = false;
-
-function showStep(n) {
-  [1, 2, 3].forEach(i => {
-    const el = steps[i];
-    const dot = stepIndicators[i - 1];
-    if (i === n) {
-      el?.classList.remove("hidden");
-      dot?.classList.add("active");
-      dot?.classList.remove("complete");
-    } else if (i < n) {
-      el?.classList.remove("hidden");
-      dot?.classList.remove("active");
-      dot?.classList.add("complete");
-    } else {
-      el?.classList.add("hidden");
-      dot?.classList.remove("active", "complete");
-    }
-  });
-}
-
-// Install button event listeners
-installBtn.addEventListener("install-start", () => {
-  logProvision("info", "Flash started...");
-});
-
-installBtn.addEventListener("install-end", () => {
-  logProvision("info", "Flash completed successfully!");
-  showStep(2);
-  provisionBtn.disabled = false;
-  statusEl.className = "config-status ready";
-  statusEl.textContent = "Flash OK. Entrez votre configuration puis cliquez Provisionner.";
-});
-
-installBtn.addEventListener("install-error", (e) => {
-  logProvision("error", "Flash failed: " + (e.detail?.message || "Unknown error"));
-  statusEl.className = "config-status";
-  statusEl.textContent = "Erreur lors du flash. Vérifiez la connexion USB.";
-});
-
-// Validation
-const fSsid = document.getElementById("f-ssid");
-const fPass = document.getElementById("f-pass");
-const fMac = document.getElementById("f-mac");
-
-function validateConfig() {
+/* ── Validation ─────────────────────────────────────────────────────────── */
+function validate() {
   const ssid = document.getElementById("inp-ssid").value.trim();
   const pass = document.getElementById("inp-pass").value;
-  const mac = document.getElementById("inp-mac").value.trim();
+  const mac  = document.getElementById("inp-mac").value.trim();
 
   fSsid.classList.remove("has-error");
   fMac.classList.remove("has-error");
 
   if (pass && !ssid) {
     fSsid.classList.add("has-error");
-    return { valid: false, error: "SSID requis si un mot de passe est fourni." };
+    return { ok: false };
   }
-
   const macRe = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
   if (mac && !macRe.test(mac)) {
     fMac.classList.add("has-error");
-    return { valid: false, error: "Format MAC invalide. Exemple : A4:C1:38:01:02:03" };
+    return { ok: false };
   }
-
-  return { valid: true, ssid, pass, mac };
+  return { ok: true, ssid, pass, mac };
 }
 
-document.getElementById("inp-ssid").addEventListener("input", () => {
-  provisionBtn.disabled = !validateConfig().valid;
-});
-document.getElementById("inp-pass").addEventListener("input", () => {
-  provisionBtn.disabled = !validateConfig().valid;
-});
-document.getElementById("inp-mac").addEventListener("input", () => {
-  provisionBtn.disabled = !validateConfig().valid;
-});
+["inp-ssid","inp-pass","inp-mac"].forEach(id =>
+  document.getElementById(id).addEventListener("input", validate)
+);
 
-// Format MAC as user types (insert colons automatically)
+/* ── MAC auto-colon ─────────────────────────────────────────────────────── */
 document.getElementById("inp-mac").addEventListener("beforeinput", function(e) {
-  // Only handle printable hex characters
-  if (!e.data || !/^[0-9A-Fa-f]$/.test(e.data)) {
-    return;
-  }
+  if (!e.data || !/^[0-9A-Fa-f]$/.test(e.data)) return;
   const v = this.value;
   if (v.length > 0 && v.length % 3 === 2 && !v.endsWith(":")) {
     this.value = v + ":";
   }
 });
-
-// Also prevent non-hex input
 document.getElementById("inp-mac").addEventListener("keydown", function(e) {
-  // Allow control keys
-  if (e.key === "Backspace" || e.key === "Delete" || e.key === "ArrowLeft" || 
-      e.key === "ArrowRight" || e.key === "Tab" || e.ctrlKey || e.metaKey) {
-    return;
-  }
-  // Only allow hex chars
-  if (!/^[0-9A-Fa-f]$/.test(e.key)) {
-    e.preventDefault();
-  }
+  if (e.key.length > 1 || e.ctrlKey || e.metaKey) return;
+  if (!/^[0-9A-Fa-f]$/.test(e.key)) e.preventDefault();
 });
 
-// Provisioning: Open Web Serial and send config
-async function provision() {
-  const validation = validateConfig();
-  if (!validation.valid) {
-    statusEl.className = "config-status";
-    statusEl.textContent = validation.error;
-    return;
-  }
-
-  const { ssid, pass, mac } = validation;
-
-  try {
-    showStep(3);
-    provisionLog.style.display = "block";
-    provisionLog.textContent = "";
-    statusEl.className = "config-status provisioning";
-    statusEl.textContent = "Connexion au port série...";
-    provisionBtn.disabled = true;
-
-    // Request serial port
-    port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
-
-    const textDecoder = new TextDecoderStream();
-    const readable = port.readable.pipeThrough(textDecoder);
-    reader = readable.getReader();
-    writer = port.writable.getWriter();
-    keepReading = true;
-
-    logProvision("info", "Port série ouvert (115200 baud)");
-    logProvision("info", "Attente du firmware...");
-
-    // Start reading responses
-    readLoop();
-
-    // Wait a bit for device to be ready
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Send provisioning command
-    const config = { ssid, pass, btmac: mac };
-    const cmd = "PROVISION:" + JSON.stringify(config) + "\n";
-    logProvision("sent", cmd.trim());
-    await writer.write(new TextEncoder().encode(cmd));
-
-    // Wait for response
-    statusEl.textContent = "Configuration envoyée, attente réponse...";
-
-  } catch (err) {
-    logProvision("error", "Erreur: " + err.message);
-    statusEl.className = "config-status";
-    statusEl.textContent = "Erreur provisioning: " + err.message;
-    provisionBtn.disabled = false;
-    showStep(2);
-  }
+/* ── Logging ────────────────────────────────────────────────────────────── */
+function log(type, msg) {
+  logEl.style.display = "block";
+  const line = document.createElement("div");
+  line.className = type;
+  line.textContent = "[" + new Date().toLocaleTimeString() + "] " + msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
-async function readLoop() {
+/* ── Provision ──────────────────────────────────────────────────────────── */
+provisionBtn.addEventListener("click", async () => {
+  const v = validate();
+  if (!v.ok) return;
+
+  provisionBtn.disabled = true;
+  logEl.textContent = "";
+  logEl.style.display = "block";
+  statusBar.className = "status-bar busy";
+  statusBar.textContent = "Opening serial port…";
+
+  let port, reader, writer;
   try {
-    while (keepReading && reader) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value) {
-        const lines = value.split("\n");
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed) {
-            if (trimmed.startsWith("OK") || trimmed.startsWith("SUCCESS")) {
-              logProvision("received", trimmed);
-              statusEl.className = "config-status ready";
-              statusEl.textContent = "Provisioning réussi ! L'appareil va redémarrer.";
-              provisionBtn.textContent = "Terminé";
-              provisionBtn.classList.add("secondary");
-              setTimeout(() => {
-                keepReading = false;
-                closePort();
-              }, 2000);
-            } else if (trimmed.startsWith("ERROR")) {
-              logProvision("error", trimmed);
-              statusEl.className = "config-status";
-              statusEl.textContent = "Erreur: " + trimmed;
-              provisionBtn.disabled = false;
-            } else {
-              logProvision("info", trimmed);
-            }
+    port   = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    const decoded = port.readable.pipeThrough(new TextDecoderStream());
+    reader = decoded.getReader();
+    writer = port.writable.getWriter();
+
+    log("info", "Serial port open at 115200 baud");
+    statusBar.textContent = "Waiting for device…";
+    await new Promise(r => setTimeout(r, 1200));
+
+    const payload = { ssid: v.ssid, pass: v.pass, btmac: v.mac };
+    const cmd = "PROVISION:" + JSON.stringify(payload) + "\n";
+    log("sent", cmd.trim());
+    await writer.write(new TextEncoder().encode(cmd));
+    statusBar.textContent = "Command sent — waiting for response…";
+
+    /* Read response with 8 s timeout.
+     * A single timer calls reader.cancel() which resolves the pending read()
+     * with done=true, cleanly breaking the loop — avoids concurrent read()
+     * calls that would throw a TypeError under the Streams API. */
+    const timeoutId = setTimeout(() => { reader.cancel().catch(() => {}); }, 8000);
+    let buf = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        const lines = buf.split("\n");
+        buf = lines.pop();          /* keep incomplete last segment */
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) continue;
+          log("received", line);
+          if (line.startsWith("OK")) {
+            statusBar.className = "status-bar ok";
+            statusBar.textContent = "Provisioned! The device is rebooting.";
+            provisionBtn.textContent = "Done ✓";
+            provisionBtn.className = "btn done";
+            return;
+          }
+          if (line.startsWith("ERROR")) {
+            statusBar.className = "status-bar err";
+            statusBar.textContent = line;
+            provisionBtn.disabled = false;
+            return;
           }
         }
       }
+    } finally {
+      clearTimeout(timeoutId);
     }
+    /* loop exited via done=true from cancel() → timeout */
+    statusBar.className = "status-bar err";
+    statusBar.textContent = "Timeout — no response from device. Is the firmware running?";
+    provisionBtn.disabled = false;
   } catch (err) {
-    logProvision("error", "Erreur lecture: " + err.message);
+    log("err-line", err.message);
+    statusBar.className = "status-bar err";
+    statusBar.textContent = "Error: " + err.message;
+    provisionBtn.disabled = false;
+  } finally {
+    try { await reader?.cancel(); } catch {}
+    try { await writer?.close(); } catch {}
+    try { await port?.close(); } catch {}
   }
-}
-
-function logProvision(type, msg) {
-  const timestamp = new Date().toLocaleTimeString();
-  const line = document.createElement("div");
-  line.className = type;
-  line.textContent = `[${timestamp}] ${msg}`;
-  provisionLog.appendChild(line);
-  provisionLog.scrollTop = provisionLog.scrollHeight;
-}
-
-async function closePort() {
-  keepReading = false;
-  if (reader) {
-    try { await reader.cancel(); } catch {}
-    reader = null;
-  }
-  if (writer) {
-    try { await writer.close(); } catch {}
-    writer = null;
-  }
-  if (port) {
-    try { await port.close(); } catch {}
-    port = null;
-  }
-}
-
-provisionBtn.addEventListener("click", provision);
+});
 </script>
 </body>
 </html>
