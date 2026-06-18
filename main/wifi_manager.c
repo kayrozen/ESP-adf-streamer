@@ -44,8 +44,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_BEACON_TIMEOUT) {
         ESP_LOGW(TAG, "Beacon timeout");
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_AUTH_EXPIRE) {
-        ESP_LOGW(TAG, "Auth expired");
     }
 }
 
