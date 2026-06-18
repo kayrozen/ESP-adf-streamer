@@ -104,6 +104,7 @@ audio_element_handle_t passthrough_el_init(void)
     cfg.destroy = passthrough_destroy;
     cfg.tag     = "passthrough";
     cfg.task_stack = 4 * 1024;
+    cfg.out_rb_size = 8 * 1024;   /* ~46 ms PCM at 44.1kHz stereo — directly before A2DP, absorbs BT jitter */
     cfg.buffer_len = 2048;
 
     audio_element_handle_t el = audio_element_init(&cfg);

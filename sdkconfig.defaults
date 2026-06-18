@@ -49,7 +49,13 @@ CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
 
 # Audio pipeline — allow element task stacks to be allocated in PSRAM.
 # Without this, BT+WiFi exhaust internal DRAM and audio thread creation fails.
-CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+# NOTE: xTaskCreateStaticPinnedToCore + PSRAM stack is broken in ADF v2.8 +
+# IDF v5.3.1 (returns NULL with 40 KB internal free). Disable to fall back to
+# xTaskCreatePinnedToCore. With this disabled, all task stacks are allocated
+# strictly in internal DRAM (SPIRAM_USE_MALLOC does NOT overflow stacks to PSRAM).
+# Ring buffer reductions (decoder 8KB, passthrough 4KB) free enough internal
+# DRAM for the audio task stacks to fit.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=n
 CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
 
 # Larger HTTP buffer for HLS segments
