@@ -210,6 +210,19 @@ const uint8_t *bt_manager_get_peer_bda(void)
     return s_peer_bda;
 }
 
+esp_err_t bt_manager_reconnect_a2dp(void)
+{
+    static const uint8_t zero_bda[6] = {0};
+    if (memcmp(s_peer_bda, zero_bda, 6) == 0) {
+        ESP_LOGW(TAG, "reconnect_a2dp: no peer BDA configured");
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "Retrying A2DP connect to %02X:%02X:%02X:%02X:%02X:%02X",
+             s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
+             s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
+    return esp_a2d_source_connect(s_peer_bda);
+}
+
 bool bt_manager_is_a2dp_connected(void)
 {
     return s_a2dp_connected;

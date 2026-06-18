@@ -93,6 +93,12 @@ static void run_event_loop(void)
         return;
     }
 
+    /* A2DP stall detection: if no PCM bytes flow for 20 s, the A2DP connection
+     * failed silently (a2dp_stream does not propagate SDP/L2CAP errors to the
+     * pipeline event queue). Retry the connection and restart the pipeline. */
+    uint64_t stall_last_bytes = 0;
+    int64_t  stall_since_us   = esp_timer_get_time();
+
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
         audio_event_iface_msg_t msg;
@@ -108,6 +114,21 @@ static void run_event_loop(void)
             do_switch_to_station(next);
         }
 #endif
+
+        /* A2DP stall detection — retry if no PCM bytes flow for 20 s */
+        {
+            passthrough_stats_t ps;
+            passthrough_el_get_stats(pipeline_get_passthrough_el(), &ps);
+            if (ps.bytes_passed != stall_last_bytes) {
+                stall_last_bytes = ps.bytes_passed;
+                stall_since_us   = esp_timer_get_time();
+            } else if ((esp_timer_get_time() - stall_since_us) > 20LL * 1000000) {
+                ESP_LOGW(TAG, "No PCM bytes for 20 s — retrying A2DP + pipeline");
+                stall_since_us = esp_timer_get_time();  /* reset cooldown */
+                bt_manager_reconnect_a2dp();
+                pipeline_change_station(TEST_STATIONS[s_current_station].url);
+            }
+        }
 
         if (ret != ESP_OK) {
             /* ESP_ERR_TIMEOUT is normal — just loop for next event or rotation check */

@@ -26,3 +26,10 @@ const uint8_t *bt_manager_get_peer_bda(void);
 
 /** True if A2DP connection is currently established. */
 bool bt_manager_is_a2dp_connected(void);
+
+/**
+ * Retry esp_a2d_source_connect() to the configured peer BDA.
+ * Safe to call while the pipeline is running; the BT stack ignores
+ * duplicate connect requests when already connected.
+ */
+esp_err_t bt_manager_reconnect_a2dp(void);
