@@ -277,9 +277,7 @@ document.getElementById("inp-mac").addEventListener("beforeinput", function(e) {
   }
 });
 document.getElementById("inp-mac").addEventListener("keydown", function(e) {
-  if (e.key === "Backspace" || e.key === "Delete" ||
-      e.key.startsWith("Arrow") || e.key === "Tab" ||
-      e.ctrlKey || e.metaKey) return;
+  if (e.key.length > 1 || e.ctrlKey || e.metaKey) return;
   if (!/^[0-9A-Fa-f]$/.test(e.key)) e.preventDefault();
 });
 
@@ -323,42 +321,45 @@ provisionBtn.addEventListener("click", async () => {
     await writer.write(new TextEncoder().encode(cmd));
     statusBar.textContent = "Command sent — waiting for response…";
 
-    /* Read response with 8 s timeout */
-    const deadline = Date.now() + 8000;
+    /* Read response with 8 s timeout.
+     * A single timer calls reader.cancel() which resolves the pending read()
+     * with done=true, cleanly breaking the loop — avoids concurrent read()
+     * calls that would throw a TypeError under the Streams API. */
+    const timeoutId = setTimeout(() => { reader.cancel().catch(() => {}); }, 8000);
     let buf = "";
-    outer: while (Date.now() < deadline) {
-      const { value, done } = await Promise.race([
-        reader.read(),
-        new Promise(r => setTimeout(() => r({ value: null, done: true }), 500)),
-      ]);
-      if (done) break;
-      if (!value) continue;
-      buf += value;
-      for (const raw of buf.split("\n")) {
-        const line = raw.trim();
-        if (!line) continue;
-        log("received", line);
-        if (line.startsWith("OK")) {
-          statusBar.className = "status-bar ok";
-          statusBar.textContent = "Provisioned! The device is rebooting.";
-          provisionBtn.textContent = "Done ✓";
-          provisionBtn.className = "btn done";
-          break outer;
-        }
-        if (line.startsWith("ERROR")) {
-          statusBar.className = "status-bar err";
-          statusBar.textContent = line;
-          provisionBtn.disabled = false;
-          break outer;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        const lines = buf.split("\n");
+        buf = lines.pop();          /* keep incomplete last segment */
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) continue;
+          log("received", line);
+          if (line.startsWith("OK")) {
+            statusBar.className = "status-bar ok";
+            statusBar.textContent = "Provisioned! The device is rebooting.";
+            provisionBtn.textContent = "Done ✓";
+            provisionBtn.className = "btn done";
+            return;
+          }
+          if (line.startsWith("ERROR")) {
+            statusBar.className = "status-bar err";
+            statusBar.textContent = line;
+            provisionBtn.disabled = false;
+            return;
+          }
         }
       }
-      buf = buf.includes("\n") ? buf.split("\n").pop() : buf;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    if (statusBar.className === "status-bar busy") {
-      statusBar.className = "status-bar err";
-      statusBar.textContent = "Timeout — no response from device. Is the firmware running?";
-      provisionBtn.disabled = false;
-    }
+    /* loop exited via done=true from cancel() → timeout */
+    statusBar.className = "status-bar err";
+    statusBar.textContent = "Timeout — no response from device. Is the firmware running?";
+    provisionBtn.disabled = false;
   } catch (err) {
     log("err-line", err.message);
     statusBar.className = "status-bar err";
