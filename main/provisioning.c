@@ -134,7 +134,7 @@ static void provision_task(void *arg)
         return;
     }
 
-    char line_buf[256];
+    char line_buf[UART_BUF_SIZE];
     size_t line_pos = 0;
 
     ESP_LOGI(TAG, "Provisioning task started, listening on UART%d", UART_PORT_NUM);
@@ -236,7 +236,7 @@ void provisioning_stop(void)
     if (s_provision_task) {
         /* Wait for task to clean up and signal done (with timeout) */
         if (s_provision_done) {
-            xSemaphoreTake(s_provision_done, pdMS_TO_TICKS(1000));
+            xSemaphoreTake(s_provision_done, portMAX_DELAY);
         }
         s_provision_task = NULL;
     }

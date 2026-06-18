@@ -64,7 +64,9 @@ esp_err_t wifi_manager_init(void)
     }
 
     ret = esp_event_loop_create_default();
-    if (ret != ESP_OK) {
+    /* ESP_ERR_INVALID_STATE means another component (e.g. Bluedroid) already
+     * created the default loop — that is fine, we can reuse it. */
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_event_loop_create_default failed: %d", ret);
         return ret;
     }
@@ -134,6 +136,8 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
     }
 
     ESP_LOGI(TAG, "Connecting to SSID: %s …", ssid);
+    /* Clear stale bits from any previous connect attempt before waiting. */
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE,

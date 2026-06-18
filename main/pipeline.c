@@ -269,10 +269,8 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
         audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
         audio_pipeline_link(s_pipeline, link_tag, 4);
         audio_pipeline_change_state(s_pipeline, AEL_STATE_RUNNING);
-        /* Now safe to deinit failed new decoder */
+        /* Deinit failed new decoder only — old decoder was restored, not replaced */
         audio_element_deinit(new_decoder);
-        /* Now safe to deinit old decoder (replaced) */
-        audio_element_deinit(old_decoder);
         return ret;
     }
 

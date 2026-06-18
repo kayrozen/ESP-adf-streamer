@@ -120,7 +120,9 @@ audio_element_handle_t passthrough_el_init(void)
 void passthrough_el_get_stats(audio_element_handle_t el,
                                passthrough_stats_t *out)
 {
+    if (!el || !out) return;
     passthrough_ctx_t *ctx = audio_element_getdata(el);
+    if (!ctx || !ctx->mutex) return;
     xSemaphoreTake(ctx->mutex, portMAX_DELAY);
     *out = ctx->stats;
     xSemaphoreGive(ctx->mutex);
