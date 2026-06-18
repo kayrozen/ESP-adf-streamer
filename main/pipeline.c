@@ -34,6 +34,9 @@ static pipeline_codec_t s_current_codec = PIPELINE_CODEC_AUTO;
 /* Mutex for protecting pipeline state during station changes */
 static SemaphoreHandle_t s_pipeline_mutex = NULL;
 
+/* Forward declaration for static function used in pipeline_start */
+static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec);
+
 /* ---- helpers ---- */
 
 static audio_element_handle_t create_http_stream(void)
