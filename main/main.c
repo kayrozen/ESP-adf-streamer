@@ -81,10 +81,12 @@ static void run_event_loop(void)
 static esp_err_t switch_to_station(int idx)
 {
     if (idx < 0 || idx >= NUM_TEST_STATIONS) return ESP_ERR_INVALID_ARG;
-    s_current_station = idx;
     ESP_LOGI(TAG, "Switching to station %d: %s", idx, TEST_STATIONS[idx].name);
     int64_t t0 = esp_timer_get_time();
     esp_err_t ret = pipeline_change_station(TEST_STATIONS[idx].url);
+    if (ret == ESP_OK) {
+        s_current_station = idx;  /* Only update index on success */
+    }
     int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
     ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", elapsed_ms);
     return ret;

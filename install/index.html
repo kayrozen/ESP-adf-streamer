@@ -578,10 +578,27 @@ document.getElementById("inp-mac").addEventListener("input", () => {
 });
 
 // Format MAC as user types (insert colons automatically)
-document.getElementById("inp-mac").addEventListener("keydown", function(e) {
+document.getElementById("inp-mac").addEventListener("beforeinput", function(e) {
+  // Only handle printable hex characters
+  if (!e.data || !/^[0-9A-Fa-f]$/.test(e.data)) {
+    return;
+  }
   const v = this.value;
-  if (e.key !== "Backspace" && v.length > 0 && v.length % 3 === 2 && !v.endsWith(":")) {
+  if (v.length > 0 && v.length % 3 === 2 && !v.endsWith(":")) {
     this.value = v + ":";
+  }
+});
+
+// Also prevent non-hex input
+document.getElementById("inp-mac").addEventListener("keydown", function(e) {
+  // Allow control keys
+  if (e.key === "Backspace" || e.key === "Delete" || e.key === "ArrowLeft" || 
+      e.key === "ArrowRight" || e.key === "Tab" || e.ctrlKey || e.metaKey) {
+    return;
+  }
+  // Only allow hex chars
+  if (!/^[0-9A-Fa-f]$/.test(e.key)) {
+    e.preventDefault();
   }
 });
 

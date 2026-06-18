@@ -226,6 +226,9 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
         return ESP_FAIL;
     }
 
+    /* Keep reference to old decoder for rollback on failure */
+    audio_element_handle_t old_decoder = s_decoder_el;
+
     /* Stop pipeline to safely swap decoder */
     audio_pipeline_stop(s_pipeline);
     audio_pipeline_wait_for_stop(s_pipeline);
@@ -240,6 +243,12 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
     esp_err_t ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register new decoder: %d", ret);
+        /* Rollback: restore old decoder */
+        s_decoder_el = old_decoder;
+        audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
+        const char *link_tag[] = {"http", "dec", "pass", "bt"};
+        audio_pipeline_link(s_pipeline, link_tag, 4);
+        audio_pipeline_change_state(s_pipeline, AEL_STATE_RUNNING);
         return ret;
     }
 
@@ -247,6 +256,13 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
     ret = audio_pipeline_link(s_pipeline, link_tag, 4);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to relink pipeline after decoder swap: %d", ret);
+        /* Rollback: restore old decoder */
+        s_decoder_el = old_decoder;
+        audio_pipeline_unregister(s_pipeline, new_decoder);
+        audio_element_deinit(new_decoder);
+        audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
+        audio_pipeline_link(s_pipeline, link_tag, 4);
+        audio_pipeline_change_state(s_pipeline, AEL_STATE_RUNNING);
         return ret;
     }
 
