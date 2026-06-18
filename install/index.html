@@ -322,7 +322,7 @@ function onFlashComplete() {
   if (!creds) {
     statusBar.style.display = "";
     statusBar.className = "status-bar busy";
-    statusBar.textContent = "Flash done. Fill in credentials above, then use "Send credentials via UART" below.";
+    statusBar.textContent = "Flash done. Fill in credentials above, then use “Send credentials via UART” below.";
     return;
   }
   sendProvision(creds, logEl, statusBar, /* requestNew= */ false);
