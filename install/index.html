@@ -19,94 +19,42 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      background: var(--bg); color: var(--text);
       min-height: 100vh;
-      display: flex;
-      align-items: flex-start;
-      justify-content: center;
+      display: flex; align-items: flex-start; justify-content: center;
       padding: 2rem 1rem;
     }
     main { max-width: 560px; width: 100%; }
     .badge {
-      display: inline-block;
-      background: var(--accent);
-      color: #fff;
-      font-size: 0.65rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 2px 8px;
-      border-radius: 3px;
+      display: inline-block; background: var(--accent); color: #fff;
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 2px 8px; border-radius: 3px;
       margin-bottom: 1rem;
     }
     h1 { font-size: 1.8rem; font-weight: 700; line-height: 1.2; margin-bottom: 0.4rem; }
     .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
     .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.5rem;
-      margin-bottom: 1.25rem;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.5rem; margin-bottom: 1.25rem;
     }
     .card-title {
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 1rem;
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 1rem;
     }
     code {
-      font-family: var(--mono);
-      background: #2a2a2e;
-      padding: 1px 5px;
-      border-radius: 3px;
-      font-size: 0.85em;
-    }
-    /* Flash button */
-    esp-web-install-button {
-      --esp-tools-button-color: var(--accent);
-      --esp-tools-button-text-color: #fff;
-      width: 100%;
-    }
-    esp-web-install-button::part(button) {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 7px;
-      padding: 0.7rem 1.5rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      width: 100%;
-    }
-    esp-web-install-button::part(button):hover { opacity: 0.85; }
-    .flash-note {
-      font-size: 0.8rem;
-      color: var(--muted);
-      margin-top: 0.75rem;
-      line-height: 1.5;
+      font-family: var(--mono); background: #2a2a2e;
+      padding: 1px 5px; border-radius: 3px; font-size: 0.85em;
     }
     /* Form */
     .field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.9rem; }
     .field label {
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: var(--muted);
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      font-size: 0.75rem; font-weight: 700; color: var(--muted);
+      letter-spacing: 0.06em; text-transform: uppercase;
     }
     .field input {
-      background: #111113;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-size: 0.95rem;
-      font-family: inherit;
-      padding: 0.6rem 0.75rem;
-      outline: none;
-      transition: border-color 0.15s;
+      background: #111113; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 0.95rem; font-family: inherit;
+      padding: 0.6rem 0.75rem; outline: none; transition: border-color 0.15s;
     }
     .field input:focus { border-color: var(--accent); }
     .field input::placeholder { color: #55555a; }
@@ -114,65 +62,58 @@
     .field.has-error input { border-color: #c43030; }
     .field .err { font-size: 0.75rem; color: #e05050; display: none; }
     .field.has-error .err { display: block; }
-    /* Buttons */
-    .btn {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 7px;
-      padding: 0.75rem 1.5rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
+    /* esp-web-tools button */
+    esp-web-install-button {
+      --esp-tools-button-color: var(--accent);
+      --esp-tools-button-text-color: #fff;
       width: 100%;
-      transition: opacity 0.15s;
-      margin-top: 0.25rem;
     }
-    .btn:hover:not(:disabled) { opacity: 0.85; }
-    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .btn.done { background: #2a4a2a; color: #5cba5c; cursor: default; }
-    /* Status bar */
+    esp-web-install-button::part(button) {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 7px; padding: 0.75rem 1.5rem;
+      font-size: 0.95rem; font-weight: 600; cursor: pointer; width: 100%;
+    }
+    esp-web-install-button::part(button):hover { opacity: 0.85; }
+    /* Status */
     .status-bar {
-      font-size: 0.82rem;
-      padding: 0.55rem 0.8rem;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: #111113;
-      color: var(--muted);
-      margin-bottom: 0.75rem;
+      font-size: 0.82rem; padding: 0.55rem 0.8rem; border-radius: 6px;
+      border: 1px solid var(--border); background: #111113; color: var(--muted);
+      margin-top: 0.75rem;
     }
-    .status-bar.ok  { border-color: #2a4a2a; background: #0d1f0d; color: #5cba5c; }
-    .status-bar.err { border-color: #4a1f1f; background: #1f0d0d; color: #e05050; }
+    .status-bar.ok   { border-color: #2a4a2a; background: #0d1f0d; color: #5cba5c; }
+    .status-bar.err  { border-color: #4a1f1f; background: #1f0d0d; color: #e05050; }
     .status-bar.busy { border-color: var(--accent); background: #2a1515; color: #e08060; }
     /* Log */
     .log {
-      font-family: var(--mono);
-      font-size: 0.75rem;
-      background: #0a0a0c;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem;
-      max-height: 180px;
-      overflow-y: auto;
-      color: var(--muted);
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin-top: 0.75rem;
-      display: none;
+      font-family: var(--mono); font-size: 0.75rem; background: #0a0a0c;
+      border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem;
+      max-height: 160px; overflow-y: auto; color: var(--muted);
+      white-space: pre-wrap; word-break: break-word;
+      margin-top: 0.75rem; display: none;
     }
     .log .sent     { color: #5cba5c; }
     .log .received { color: #d4a820; }
     .log .err-line { color: #e05050; }
     .log .info     { color: #6090c0; }
+    /* Divider */
+    .divider {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin: 0.25rem 0 1rem;
+    }
+    .divider hr { flex: 1; border: none; border-top: 1px solid var(--border); }
+    .divider span { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+    /* Provision-only button */
+    .btn-outline {
+      width: 100%; background: transparent; border: 1px solid var(--border);
+      border-radius: 7px; padding: 0.65rem 1.5rem; font-size: 0.9rem;
+      font-weight: 500; color: var(--muted); cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .btn-outline:hover { border-color: var(--text); color: var(--text); }
     /* Footer */
     .footer {
-      margin-top: 1.5rem;
-      font-size: 0.78rem;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 0.5rem;
+      margin-top: 1.5rem; font-size: 0.78rem; color: var(--muted);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
     }
     .footer a { color: var(--muted); text-decoration: none; }
     .footer a:hover { color: var(--text); }
@@ -184,23 +125,12 @@
   <h1>ESP-ADF Streamer</h1>
   <p class="subtitle">Internet radio → ESP32 decode → Bluetooth A2DP speaker</p>
 
-  <!-- Step 1: Flash -->
+  <!-- Credentials form — fill BEFORE flashing -->
   <div class="card">
-    <div class="card-title">Step 1 — Flash firmware</div>
-    <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
-    <p class="flash-note">
-      Requires <strong>Chrome or Edge</strong> with the board connected via a data USB cable.<br>
-      Target: <strong>ESP32-WROVER</strong> (TTGO T7 Mini32 V1.5) · 16 MB flash · 8 MB PSRAM
-    </p>
-  </div>
-
-  <!-- Step 2: Configure + Provision (always visible) -->
-  <div class="card">
-    <div class="card-title">Step 2 — Configure &amp; Provision</div>
+    <div class="card-title">Step 1 — Enter credentials</div>
     <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1.1rem;">
-      Fill in your WiFi and Bluetooth details, then click <strong>Provision via UART</strong>.
-      The page opens a Web Serial connection and sends the credentials to the device.
-      You can do this before or after flashing — the device listens on every boot.
+      Fill in your WiFi and Bluetooth details first. They will be sent to the device
+      automatically right after flashing.
     </p>
 
     <div class="field" id="f-ssid">
@@ -209,7 +139,7 @@
       <span class="err">SSID is required when a password is set.</span>
     </div>
 
-    <div class="field" id="f-pass">
+    <div class="field">
       <label for="inp-pass">WiFi Password</label>
       <input id="inp-pass" type="password" placeholder="(leave blank for open network)" autocomplete="new-password" />
     </div>
@@ -219,15 +149,33 @@
       <input id="inp-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF"
              autocomplete="off" spellcheck="false" maxlength="17" />
       <span class="hint">Exactly as printed on the speaker label. Leave blank to auto-scan.</span>
-      <span class="err">Invalid format. Example: A4:C1:38:01:02:03</span>
+      <span class="err">Invalid format — example: A4:C1:38:01:02:03</span>
     </div>
+  </div>
 
-    <div id="status-bar" class="status-bar">
-      Enter your credentials above, then click Provision.
-    </div>
+  <!-- Flash button — flashes then auto-provisions -->
+  <div class="card">
+    <div class="card-title">Step 2 — Flash &amp; Configure</div>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1rem;">
+      Requires <strong>Chrome or Edge</strong> with the board connected via a data USB cable.
+      Target: <strong>ESP32-WROVER</strong> (TTGO T7 Mini32 V1.5) · 16 MB flash · 8 MB PSRAM
+    </p>
 
-    <button class="btn" id="provision-btn">Provision via UART</button>
+    <esp-web-install-button id="install-btn" manifest="manifest.json"></esp-web-install-button>
+
+    <div id="status-bar" class="status-bar" style="display:none;"></div>
     <div id="prov-log" class="log"></div>
+  </div>
+
+  <!-- Provision-only (re-configure without reflashing) -->
+  <div class="card">
+    <div class="card-title">Re-configure only</div>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:1rem;">
+      Already flashed? Update credentials without reflashing.
+    </p>
+    <button class="btn-outline" id="provision-only-btn">Send credentials via UART</button>
+    <div id="prov-only-status" class="status-bar" style="display:none;"></div>
+    <div id="prov-only-log" class="log"></div>
   </div>
 
   <footer class="footer">
@@ -237,36 +185,27 @@
 </main>
 
 <script>
-const provisionBtn = document.getElementById("provision-btn");
-const statusBar    = document.getElementById("status-bar");
-const logEl        = document.getElementById("prov-log");
-const fSsid        = document.getElementById("f-ssid");
-const fMac         = document.getElementById("f-mac");
+const installBtn       = document.getElementById("install-btn");
+const statusBar        = document.getElementById("status-bar");
+const logEl            = document.getElementById("prov-log");
+const provOnlyBtn      = document.getElementById("provision-only-btn");
+const provOnlyStatus   = document.getElementById("prov-only-status");
+const provOnlyLog      = document.getElementById("prov-only-log");
+const fSsid            = document.getElementById("f-ssid");
+const fMac             = document.getElementById("f-mac");
 
 /* ── Validation ─────────────────────────────────────────────────────────── */
 function validate() {
   const ssid = document.getElementById("inp-ssid").value.trim();
   const pass = document.getElementById("inp-pass").value;
   const mac  = document.getElementById("inp-mac").value.trim();
-
   fSsid.classList.remove("has-error");
   fMac.classList.remove("has-error");
-
-  if (pass && !ssid) {
-    fSsid.classList.add("has-error");
-    return { ok: false };
-  }
+  if (pass && !ssid) { fSsid.classList.add("has-error"); return null; }
   const macRe = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
-  if (mac && !macRe.test(mac)) {
-    fMac.classList.add("has-error");
-    return { ok: false };
-  }
-  return { ok: true, ssid, pass, mac };
+  if (mac && !macRe.test(mac)) { fMac.classList.add("has-error"); return null; }
+  return { ssid, pass, mac };
 }
-
-["inp-ssid","inp-pass","inp-mac"].forEach(id =>
-  document.getElementById(id).addEventListener("input", validate)
-);
 
 /* ── MAC auto-colon ─────────────────────────────────────────────────────── */
 document.getElementById("inp-mac").addEventListener("beforeinput", function(e) {
@@ -281,50 +220,51 @@ document.getElementById("inp-mac").addEventListener("keydown", function(e) {
   if (!/^[0-9A-Fa-f]$/.test(e.key)) e.preventDefault();
 });
 
-/* ── Logging ────────────────────────────────────────────────────────────── */
-function log(type, msg) {
-  logEl.style.display = "block";
+/* ── Logging helpers ────────────────────────────────────────────────────── */
+function logTo(el, type, msg) {
+  el.style.display = "block";
   const line = document.createElement("div");
   line.className = type;
   line.textContent = "[" + new Date().toLocaleTimeString() + "] " + msg;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
 }
 
-/* ── Provision ──────────────────────────────────────────────────────────── */
-provisionBtn.addEventListener("click", async () => {
-  const v = validate();
-  if (!v.ok) return;
-
-  provisionBtn.disabled = true;
-  logEl.textContent = "";
-  logEl.style.display = "block";
-  statusBar.className = "status-bar busy";
-  statusBar.textContent = "Opening serial port…";
-
+/* ── Core provision routine ─────────────────────────────────────────────── */
+async function sendProvision(creds, logEl, statusEl, requestNew) {
   let port, reader, writer;
   try {
-    port   = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
+    statusEl.style.display = "";
+    statusEl.className = "status-bar busy";
+    statusEl.textContent = "Opening serial port…";
+    logEl.textContent = "";
 
+    if (requestNew) {
+      port = await navigator.serial.requestPort();
+    } else {
+      /* Reuse the port esp-web-tools already has permission for */
+      const ports = await navigator.serial.getPorts();
+      port = ports.length === 1 ? ports[0] : await navigator.serial.requestPort();
+    }
+
+    await port.open({ baudRate: 115200 });
     const decoded = port.readable.pipeThrough(new TextDecoderStream());
     reader = decoded.getReader();
     writer = port.writable.getWriter();
 
-    log("info", "Serial port open at 115200 baud");
-    statusBar.textContent = "Waiting for device…";
-    await new Promise(r => setTimeout(r, 1200));
+    logTo(logEl, "info", "Serial port open — waiting for device boot…");
+    statusEl.textContent = "Waiting for device to boot…";
 
-    const payload = { ssid: v.ssid, pass: v.pass, btmac: v.mac };
+    /* Give the device time to boot and start the provisioning task */
+    await new Promise(r => setTimeout(r, 3000));
+
+    const payload = { ssid: creds.ssid, pass: creds.pass, btmac: creds.mac };
     const cmd = "PROVISION:" + JSON.stringify(payload) + "\n";
-    log("sent", cmd.trim());
+    logTo(logEl, "sent", cmd.trim());
     await writer.write(new TextEncoder().encode(cmd));
-    statusBar.textContent = "Command sent — waiting for response…";
+    statusEl.textContent = "Credentials sent — waiting for response…";
 
-    /* Read response with 8 s timeout.
-     * A single timer calls reader.cancel() which resolves the pending read()
-     * with done=true, cleanly breaking the loop — avoids concurrent read()
-     * calls that would throw a TypeError under the Streams API. */
+    /* 8 s timeout: cancel() resolves the pending read() with done:true */
     const timeoutId = setTimeout(() => { reader.cancel().catch(() => {}); }, 8000);
     let buf = "";
     try {
@@ -333,22 +273,19 @@ provisionBtn.addEventListener("click", async () => {
         if (done) break;
         buf += value;
         const lines = buf.split("\n");
-        buf = lines.pop();          /* keep incomplete last segment */
+        buf = lines.pop();          /* retain incomplete trailing segment */
         for (const raw of lines) {
           const line = raw.trim();
           if (!line) continue;
-          log("received", line);
+          logTo(logEl, "received", line);
           if (line.startsWith("OK")) {
-            statusBar.className = "status-bar ok";
-            statusBar.textContent = "Provisioned! The device is rebooting.";
-            provisionBtn.textContent = "Done ✓";
-            provisionBtn.className = "btn done";
+            statusEl.className = "status-bar ok";
+            statusEl.textContent = "Done! Device saved credentials and is rebooting.";
             return;
           }
           if (line.startsWith("ERROR")) {
-            statusBar.className = "status-bar err";
-            statusBar.textContent = line;
-            provisionBtn.disabled = false;
+            statusEl.className = "status-bar err";
+            statusEl.textContent = line;
             return;
           }
         }
@@ -356,20 +293,48 @@ provisionBtn.addEventListener("click", async () => {
     } finally {
       clearTimeout(timeoutId);
     }
-    /* loop exited via done=true from cancel() → timeout */
-    statusBar.className = "status-bar err";
-    statusBar.textContent = "Timeout — no response from device. Is the firmware running?";
-    provisionBtn.disabled = false;
+    /* Loop exited via cancel() → timeout */
+    statusEl.className = "status-bar err";
+    statusEl.textContent = "Timeout — no response. Is the firmware running?";
   } catch (err) {
-    log("err-line", err.message);
-    statusBar.className = "status-bar err";
-    statusBar.textContent = "Error: " + err.message;
-    provisionBtn.disabled = false;
+    logTo(logEl, "err-line", err.message);
+    statusEl.className = "status-bar err";
+    statusEl.textContent = "Error: " + err.message;
   } finally {
     try { await reader?.cancel(); } catch {}
     try { await writer?.close(); } catch {}
-    try { await port?.close(); } catch {}
+    try { await port?.close();   } catch {}
   }
+}
+
+/* ── Auto-provision after flash ─────────────────────────────────────────── */
+function onFlashComplete() {
+  const creds = validate();
+  if (!creds) {
+    statusBar.style.display = "";
+    statusBar.className = "status-bar busy";
+    statusBar.textContent = "Flash done. Fill in credentials above, then use "Send credentials via UART" below.";
+    return;
+  }
+  sendProvision(creds, logEl, statusBar, /* requestNew= */ false);
+}
+
+/* Listen for flash completion via both event names used by esp-web-tools */
+installBtn.addEventListener("install-end",    onFlashComplete);
+installBtn.addEventListener("state-changed",  (e) => {
+  if (e.detail?.state === "finished") onFlashComplete();
+});
+
+/* ── Provision-only button ──────────────────────────────────────────────── */
+provOnlyBtn.addEventListener("click", () => {
+  const creds = validate();
+  if (!creds) {
+    provOnlyStatus.style.display = "";
+    provOnlyStatus.className = "status-bar err";
+    provOnlyStatus.textContent = "Fix the form errors above first.";
+    return;
+  }
+  sendProvision(creds, provOnlyLog, provOnlyStatus, /* requestNew= */ true);
 });
 </script>
 </body>
