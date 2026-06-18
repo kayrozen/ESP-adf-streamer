@@ -11,8 +11,10 @@ on:
 
 env:
   # ESP-ADF release to build against.
-  # Update this when upgrading the framework — also update IDF container tag below.
-  ADF_VERSION: release/v2.7
+  # Use a tag (v2.x), NOT a branch — release/v2.7 does not exist.
+  # Available tags: v2.6 v2.7 v2.8 (latest). Active branch: release/v2.x.
+  # Update this when upgrading; also update IDF container tag below.
+  ADF_VERSION: v2.8
   ADF_PATH: /opt/esp-adf
   # Firmware output name matches project() in CMakeLists.txt
   FW_BIN: esp-adf-streamer.bin
