@@ -7,6 +7,7 @@
 #include "esp_bt_device.h"
 #include "esp_gap_bt_api.h"
 #include "esp_a2dp_api.h"
+#include "esp_avrc_api.h"
 #include "bt_manager.h"
 
 static const char *TAG = "bt_mgr";
@@ -17,6 +18,14 @@ static const char *TAG = "bt_mgr";
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
 static bool     s_a2dp_connected = false;
+
+/* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
+
+static void avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param)
+{
+    (void)event;
+    (void)param;
+}
 
 /* ---- GAP callback ---- */
 
@@ -86,6 +95,19 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             ESP_LOGW(TAG, "Auth failed: %d", param->auth_cmpl.stat);
         }
         break;
+    case ESP_BT_GAP_CFM_REQ_EVT:
+        /* SSP numeric comparison — auto-accept (Just Works, no display/keyboard) */
+        ESP_LOGI(TAG, "SSP confirm request — auto-accepting");
+        esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+        break;
+    case ESP_BT_GAP_KEY_NOTIF_EVT:
+        ESP_LOGI(TAG, "SSP passkey: %06lu", (unsigned long)param->key_notif.passkey);
+        break;
+    case ESP_BT_GAP_KEY_REQ_EVT:
+        /* Passkey entry — send 0000 (legacy fallback) */
+        ESP_LOGI(TAG, "SSP passkey request — entering 0000");
+        esp_bt_gap_ssp_passkey_reply(param->key_req.bda, true, 0);
+        break;
     default:
         break;
     }
@@ -152,6 +174,20 @@ esp_err_t bt_manager_init(const char *device_name)
     ESP_ERROR_CHECK(esp_bluedroid_enable());
 
     ESP_ERROR_CHECK(esp_bt_gap_register_callback(gap_callback));
+
+    /* IO capability = None → forces "Just Works" SSP (no PIN/confirmation needed).
+     * Must be set before any connection attempt so the speaker accepts us. */
+    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+    ESP_ERROR_CHECK(esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(iocap)));
+
+    /* Legacy PIN fallback for older speakers that use PIN-based pairing */
+    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, (uint8_t *)"0000");
+
+    /* AVRC must be initialized before A2DP — many speakers check for AVRC
+     * in our SDP record and refuse the A2DP connection if it's missing. */
+    ESP_ERROR_CHECK(esp_avrc_ct_init());
+    ESP_ERROR_CHECK(esp_avrc_ct_register_callback(avrc_ct_callback));
+
     ESP_ERROR_CHECK(esp_a2d_register_callback(a2dp_callback));
     ESP_ERROR_CHECK(esp_a2d_source_init());
 
