@@ -1,0 +1,32 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi_manager.c"
+        "bt_manager.c"
+        "pipeline.c"
+        "monitor.c"
+        "passthrough_el.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        audio_pipeline
+        audio_element
+        audio_common
+        audio_hal
+        http_stream
+        mp3_decoder
+        aac_decoder
+        a2dp_stream
+        esp_peripherals
+        audio_board
+        nvs_flash
+        esp_wifi
+        bt
+        esp_common
+        esp_event
+        esp_netif
+        esp_timer
+        freertos
+        log
+        heap
+)
