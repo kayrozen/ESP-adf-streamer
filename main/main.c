@@ -109,15 +109,16 @@ static void run_event_loop(void)
         }
 #endif
 
-        /* A2DP stall detection — retry if no PCM bytes flow for 20 s.
-         * Track the a2dp_stream element's byte_pos: it advances each time the
-         * BT controller pulls PCM from the ring buffer. */
+        /* A2DP stall detection — retry if no PCM is produced for 20 s.
+         * Track the decoder element's byte_pos: it advances as PCM is produced
+         * and freezes on both a network stall (input starvation) and an A2DP
+         * stall (downstream ring-buffer backpressure). */
         {
-            audio_element_handle_t bt_el = pipeline_get_bt_el();
-            if (bt_el != NULL) {
-                if (audio_element_get_state(bt_el) == AEL_STATE_RUNNING) {
+            audio_element_handle_t dec_el = pipeline_get_decoder_el();
+            if (dec_el != NULL) {
+                if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
                     audio_element_info_t ai = {0};
-                    audio_element_getinfo(bt_el, &ai);
+                    audio_element_getinfo(dec_el, &ai);
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {
                         stall_last_bytes = cur_bytes;

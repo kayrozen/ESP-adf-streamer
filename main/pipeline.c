@@ -42,7 +42,7 @@ static audio_element_handle_t create_http_stream(void)
     http_stream_cfg_t cfg = HTTP_STREAM_CFG_DEFAULT();
     cfg.type              = AUDIO_STREAM_READER;
     cfg.enable_playlist_parser = true;   /* HLS playlist support */
-    cfg.task_stack        = 3584;        /* matches CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE */
+    cfg.task_stack        = 6 * 1024;   /* TLS handshake (HTTPS AAC/HLS stations) runs on this task — do not shrink */
     cfg.task_prio         = 23;
     cfg.out_rb_size       = 4 * 1024;   /* halve default to save internal DRAM */
     return http_stream_init(&cfg);
@@ -359,7 +359,7 @@ audio_event_iface_handle_t pipeline_get_event_iface(void)
     return s_evt;
 }
 
-audio_element_handle_t pipeline_get_bt_el(void)
+audio_element_handle_t pipeline_get_decoder_el(void)
 {
-    return s_a2dp_el;
+    return s_decoder_el;
 }

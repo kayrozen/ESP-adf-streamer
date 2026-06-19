@@ -57,6 +57,9 @@ void pipeline_deinit(void);
 audio_event_iface_handle_t pipeline_get_event_iface(void);
 
 /**
- * Get the a2dp stream element handle (for stall detection via audio_element_getinfo).
+ * Get the decoder element handle (for stall detection via audio_element_getinfo).
+ * The decoder's byte_pos advances as PCM is produced and freezes on both a
+ * network stall (input starvation) and an A2DP stall (downstream backpressure),
+ * making it a reliable liveness signal for the pipeline.
  */
-audio_element_handle_t pipeline_get_bt_el(void);
+audio_element_handle_t pipeline_get_decoder_el(void);
