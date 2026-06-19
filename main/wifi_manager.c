@@ -5,6 +5,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#include "esp_coexist.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "wifi_mgr";
@@ -123,6 +124,17 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
 
+    /* Wake on every beacon (li=1, ~102ms) instead of the default li=3 (307ms).
+     * With BT/WiFi coexistence and PS_MIN_MODEM, WiFi sleeps between beacons
+     * and the coexistence arbiter gives BT the radio during sleep windows.
+     * li=1 lets WiFi burst at ~28 KB/s (2×MSS/102ms) — well above the 16 KB/s
+     * needed for 128kbps — while sleeping ~70% of the time so BT A2DP gets
+     * enough radio time to sustain 192 KB/s PCM (48kHz/stereo/16-bit).
+     * li=3 (307ms) was the old default and was replaced by PS_NONE in PR #19,
+     * but PS_NONE keeps WiFi awake continuously, starving BT to ~60% airtime
+     * and dropping A2DP throughput below real-time regardless of buffer size. */
+    wifi_cfg.sta.listen_interval = 1;
+
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_config failed: %d", ret);
@@ -135,15 +147,18 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         return ret;
     }
 
-    /* Disable modem sleep so ACKs exit in the next BT coexistence slot
-     * (~10ms) rather than the next beacon wake-up (li=3 → 307ms default).
-     * With PS_MIN_MODEM the TCP ACK rate is limited to one per 307ms,
-     * capping throughput at 2×MSS/307ms ≈ 9KB/s regardless of window size
-     * (log 22 measured exactly 9.4KB/s). WIFI_PS_NONE is the IDF-documented
-     * way to improve WiFi throughput under BT/WiFi coexistence. */
-    ret = esp_wifi_set_ps(WIFI_PS_NONE);
+    /* Keep modem sleep (PS_MIN_MODEM) so WiFi yields the radio to BT between
+     * beacon wakes. PS_NONE (tried in PR #19) keeps WiFi awake 100% of the
+     * time; the coexistence arbiter then starves BT A2DP to ~60% throughput
+     * (log 24 steady-state: 9.5 KB/s HTTP in = 114 KB/s PCM out vs 192 KB/s
+     * needed, causing choppy audio despite large PSRAM jitter buffers).
+     * With PS_MIN_MODEM + li=1 (102ms wakes), WiFi bursts at ~28 KB/s when
+     * awake but sleeps ~70% of the time, leaving BT enough airtime for
+     * glitch-free A2DP. PS_MIN_MODEM is IDF default; this call is explicit
+     * for documentation and in case of later sdkconfig changes. */
+    ret = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_set_ps(NONE) failed: %d (modem sleep stays on)", ret);
+        ESP_LOGW(TAG, "esp_wifi_set_ps(MIN_MODEM) failed: %d", ret);
     }
 
     ESP_LOGI(TAG, "Connecting to SSID: %s …", ssid);
@@ -155,6 +170,15 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
                                            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to %s", ssid);
+        /* Bias the BT/WiFi coexistence arbiter toward BT so A2DP audio gets
+         * priority over WiFi during radio contention. HTTP only needs 16 KB/s
+         * (128kbps MP3); even a brief WiFi stall is absorbed by PSRAM jitter
+         * buffers. BT underruns (heard as clicks/dropouts) cannot be buffered
+         * away and must be prevented at the arbiter level. */
+        ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
+        }
         return ESP_OK;
     }
     ESP_LOGE(TAG, "WiFi connect timeout (%d ms)", WIFI_CONNECT_TIMEOUT_MS);
