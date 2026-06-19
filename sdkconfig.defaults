@@ -94,29 +94,48 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 # "ACK every 2nd segment" fast path. Below 2*MSS every ACK waits for the
 # 200ms delayed-ACK timer, capping throughput near 14KB/s.
 #
-# Log 21 choppiness diagnosis: with WND=2880 (2*MSS) the server fills the
-# receive window in ~44ms of active WiFi time, then stalls until an ACK
-# returns. Under BT/WiFi coexistence + modem sleep (li=3 → 307ms interval)
-# ACKs are delayed 300–1600ms. Each burst/stall cycle delivers only 2880B;
-# measured average throughput was 7.8KB/s vs 16KB/s needed for 128kbps.
+# History: log 21 (li=3, 307ms modem sleep) had ACKs delayed 300-1600ms, so
+# PR #18 raised the window to 8*MSS=11520 to push a big burst before each
+# stall. That was correct WHEN WIFI WAS THE BOTTLENECK.
 #
-# Fix: 8*MSS = 11520 bytes. Server can now push 11520B (~175ms burst)
-# before stalling, quadrupling the burst/stall ratio and lifting expected
-# throughput above 16KB/s.
+# Log 27/28 changed the regime. With 240 MHz + the decoder on Core 1 (PR #22)
+# the CPU is no longer the limit: the startup burst fills the buffers at
+# 20+ KiB/s. Steady-state then SETTLES to ~12 KiB/s (79% of the 15.6 KiB/s
+# real-time rate) — not because WiFi is starved, but because the A2DP TX path
+# back-pressures it: the BT->speaker L2CAP channel congests
+# ("BT_L2CAP: l2cab is_cong_cback_context" in bursts), the 256KB PCM ring
+# fills, http_stream blocks, and WiFi idles down to match BT's drain. The
+# speaker underruns -> choppy. Internal DRAM also bottoms out at 6 KB min-ever.
 #
-# DRAM cost: none of significance. WND_DEFAULT is the *advertised* receive
-# ceiling (max unacked in-flight data on the wire), NOT a pre-allocated
-# buffer. On the ESP32 D0WD, WiFi DMA can't reach PSRAM, so received frames
-# always land in the fixed WiFi RX buffer pool in internal DRAM (STATIC_RX 8
-# + DYNAMIC_RX 8); lwIP references those buffers. Steady-state occupancy is
-# bounded by that RX pool — which this change leaves untouched — not by the
-# window. monitor.c logs HEAP@start + min-ever internal DRAM to confirm the
-# ~42KB floor holds. (NB: CONFIG_LWIP_PBUF_POOL_SPIRAM does NOT exist in
-# IDF v5.3.1; the real PSRAM knob would be SPIRAM_TRY_ALLOCATE_WIFI_LWIP.)
+# The 8*MSS window is now actively harmful: (a) it lets the server send long
+# contiguous bursts, so WiFi holds the radio for long stretches during each
+# 102ms (li=1) wake and starves BT of the airtime it needs to drain SBC; and
+# (b) when http_stream stalls under back-pressure, lwIP holds up to ~11.5KB of
+# RX pbufs in internal DRAM, driving the heap floor down to where the BT
+# controller's DMA-capable ACL TX buffers fail to allocate -> more congestion.
+# (The earlier note that the window costs ~no internal DRAM was wrong: pbufs
+# for received-but-undrained data ARE held in internal DRAM until the app
+# reads them, and a stalled consumer pins up to a full window's worth.)
+#
+# Fix: drop to 4*MSS=5760. This keeps the >=2*MSS fast-ACK path (no delayed-ACK
+# stall — li=1 already gives prompt 102ms ACKs and the icecast RTT is low, so
+# 4*MSS sustains far more than the 15.6 KiB/s needed), while halving the
+# worst-case pbuf buffering (frees internal DRAM, lifts the heap floor) and
+# shortening WiFi's radio bursts so BT A2DP gets airtime more regularly.
+#
+# VERIFY in the next log: fewer/no "BT_L2CAP: l2cab is_cong" bursts, internal
+# min-ever heap above ~12 KB, and steady-state HTTP pos rate >= 15.6 KiB/s.
 #
 # SND_BUF (send side) stays at 2880: we're a receiver (HTTP GET), so
 # outbound data is only TCP ACKs (~40B each); a smaller send buffer is fine.
-CONFIG_LWIP_TCP_WND_DEFAULT=11520
+#
+# Pin MSS=1440 explicitly so the window stays exactly 4*MSS. The IDF v5.3.1
+# default already resolves to 1440 (confirmed by "tcp mss: 1440" in the logs),
+# but defining it here keeps the 4*MSS relationship robust if the default ever
+# drifts — otherwise a changed MSS would silently break the >=2*MSS fast-ACK
+# alignment this window size depends on.
+CONFIG_LWIP_TCP_MSS=1440
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
 # Audio pipeline — allow element task stacks to be allocated in PSRAM.
