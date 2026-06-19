@@ -1,6 +1,22 @@
 # Target
 CONFIG_IDF_TARGET="esp32"
 
+# CPU frequency — 240 MHz (default is 160 MHz).
+#
+# Log 26 root cause: steady-state HTTP throughput was stuck at ~9.2 KB/s
+# (= 108 KB/s PCM) regardless of WiFi power-save config (PS_NONE in log 24
+# and PS_MIN_MODEM+li=1 in log 26 measured identically). That rules out the
+# network/WiFi path as the steady-state bottleneck. The boot log showed
+# "cpu freq: 160000000 Hz" and the monitor's CPU runtime-stats table failed
+# to render. The pipeline runs MP3 decode + SBC encode (a2dp_stream) + BT/WiFi
+# coexistence concurrently; at 160 MHz the MP3 decoder can only produce ~108
+# KB/s of PCM, below the 192 KB/s real-time rate for 48kHz/stereo/16-bit, so
+# the A2DP sink underruns continuously -> choppy audio. BT airtime is not the
+# limit (~25 KB/s of SBC over a >1 Mbps link is trivial); CPU throughput is.
+# 240 MHz gives 50% more compute (~9.2 -> ~13.8 KB/s), which combined with the
+# existing PSRAM jitter buffers should clear real-time.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
 # PSRAM — WROVER-B cache fix (mfix-esp32-psram-cache-issue equivalent)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y

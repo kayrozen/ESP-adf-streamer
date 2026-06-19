@@ -56,7 +56,13 @@ static audio_element_handle_t create_http_stream(void)
 static audio_element_handle_t create_mp3_decoder(void)
 {
     mp3_decoder_cfg_t cfg = DEFAULT_MP3_DECODER_CONFIG();
-    cfg.task_core         = 0;
+    /* Pin the decoder to Core 1. Core 0 runs the WiFi driver (core=0 in the
+     * logs), the BT controller, Bluedroid, and BT/WiFi coexistence — at 160 MHz
+     * the MP3 decode competed with all of that and could only sustain ~108 KB/s
+     * PCM (log 26), below the 192 KB/s real-time rate → choppy. Core 1 only runs
+     * the app/monitor tasks, so the decoder gets a near-dedicated core; combined
+     * with the 240 MHz bump this clears the real-time decode budget with margin. */
+    cfg.task_core         = 1;
     cfg.task_prio         = 23;
     /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
      * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
@@ -72,7 +78,9 @@ static audio_element_handle_t create_mp3_decoder(void)
 static audio_element_handle_t create_aac_decoder(void)
 {
     aac_decoder_cfg_t cfg = DEFAULT_AAC_DECODER_CONFIG();
-    cfg.task_core         = 0;
+    /* Pin to Core 1 — same rationale as create_mp3_decoder(): keep CPU-heavy
+     * decode off Core 0, which is saturated by WiFi + BT + coexistence. */
+    cfg.task_core         = 1;
     cfg.task_prio         = 23;
     /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
      * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
