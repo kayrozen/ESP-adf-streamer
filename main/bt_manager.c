@@ -409,7 +409,23 @@ esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
             ESP_LOGW(TAG, "A2DP attempt %d timed out (no connection) — retrying", attempt);
         }
         esp_a2d_source_disconnect(s_peer_bda);
-        __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+        if (!(bits & A2DP_FAIL_BIT)) {
+            /* On timeout the page may still be in flight.  Leave
+             * s_a2dp_connect_pending=1 and wait for the DISCONNECTED event;
+             * its callback will atomically clear the flag and set FAIL_BIT.
+             * Without this wait, a delayed DISCONNECTED races the next
+             * CONNECTING event, sees pending=1, and spuriously aborts it. */
+            EventBits_t disc = xEventGroupWaitBits(s_bt_event_group, A2DP_FAIL_BIT,
+                                                   pdTRUE, pdFALSE,
+                                                   pdMS_TO_TICKS(1000));
+            if (!(disc & A2DP_FAIL_BIT)) {
+                /* DISCONNECTED never arrived — force-clear the flag. */
+                __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+            }
+        } else {
+            /* DISCONNECTED callback already cleared s_a2dp_connect_pending. */
+            __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+        }
         vTaskDelay(pdMS_TO_TICKS((bits & A2DP_FAIL_BIT) ? 800 : 1500));
     }
 
