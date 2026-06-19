@@ -219,23 +219,25 @@ void app_main(void)
     /* ---- Phase A.2: Bluetooth ---- */
     ESP_ERROR_CHECK(bt_manager_init(BT_DEVICE_NAME));
 
-    /* BT/WiFi coexistence arbiter — BALANCE so each radio gets its share.
+    /* BT/WiFi coexistence arbiter — PREFER_BT.
      *
-     * History: PR #21 set PREFER_BT because BT A2DP was the bottleneck (WiFi
-     * had plenty of throughput and the concern was BT underrunning). Log 29
-     * (post PR #23) shows the opposite: BT L2CAP congestion is eliminated (0
-     * events vs 29 in log 27) but steady-state HTTP throughput is ~12.5 KB/s —
-     * only 80% of the 15.6 KB/s real-time rate needed for 128kbps MP3.
-     * PREFER_BT hands BT every contested radio slot, so WiFi can never sustain
-     * real-time even though BT is no longer congested. Switching to BALANCE
-     * gives WiFi ~50% of contested slots; the 256KB PCM ring buffer (=1.33s at
-     * 192 KB/s) absorbs any brief BT yielding without audible dropout.
+     * Log 30 (PR #24, BALANCE) was a regression: it reintroduced the BT_L2CAP
+     * is_cong bursts that log 29 (PREFER_BT) had eliminated to zero (20 events
+     * vs 0), while steady-state HTTP throughput stayed pinned at ~12 KB/s —
+     * IDENTICAL to log 29. The coex preference does not move throughput because
+     * throughput is NOT radio-arbitration-limited: it is CPU-bound. The decode
+     * +SBC-encode chain scales linearly with clock (0.56x real-time at 160 MHz
+     * -> 0.84x at 240 MHz), and Core 0 (WiFi + BT controller + Bluedroid SBC
+     * encode + coex) is the saturated resource. BALANCE gave WiFi more Core-0
+     * airtime, which only crowded out BT's SBC path -> congestion returned with
+     * no throughput benefit. PREFER_BT keeps WiFi's Core-0 burden low (zero
+     * congestion in log 29) while we attack the actual CPU ceiling separately.
      *
      * Must be called after bt_manager_init() so the BT controller is registered
      * with the coexistence framework before the preference takes effect. */
-    ret = esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_coex_preference_set(BALANCE) failed: %d", ret);
+        ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
     }
 
     ret = bt_manager_find_peer(config_get_bt_mac(), 30);
