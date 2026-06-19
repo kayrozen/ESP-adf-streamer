@@ -86,8 +86,17 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 #
 # Fix: 8*MSS = 11520 bytes. Server can now push 11520B (~175ms burst)
 # before stalling, quadrupling the burst/stall ratio and lifting expected
-# throughput above 16KB/s. PBUFs for this window come from the SPIRAM
-# PBUF pool (4MB free) — no additional internal DRAM cost.
+# throughput above 16KB/s.
+#
+# DRAM cost: none of significance. WND_DEFAULT is the *advertised* receive
+# ceiling (max unacked in-flight data on the wire), NOT a pre-allocated
+# buffer. On the ESP32 D0WD, WiFi DMA can't reach PSRAM, so received frames
+# always land in the fixed WiFi RX buffer pool in internal DRAM (STATIC_RX 8
+# + DYNAMIC_RX 8); lwIP references those buffers. Steady-state occupancy is
+# bounded by that RX pool — which this change leaves untouched — not by the
+# window. monitor.c logs HEAP@start + min-ever internal DRAM to confirm the
+# ~42KB floor holds. (NB: CONFIG_LWIP_PBUF_POOL_SPIRAM does NOT exist in
+# IDF v5.3.1; the real PSRAM knob would be SPIRAM_TRY_ALLOCATE_WIFI_LWIP.)
 #
 # SND_BUF (send side) stays at 2880: we're a receiver (HTTP GET), so
 # outbound data is only TCP ACKs (~40B each); a smaller send buffer is fine.
