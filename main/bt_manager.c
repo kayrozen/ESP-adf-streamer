@@ -73,12 +73,13 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                     for (int j = 0; j + 1 < rlen; j += 2) {
                         uint16_t u = uuids[j] | (uuids[j + 1] << 8);
                         if (u == 0x110B) {
-                            /* Only act when WE started the scan via bt_manager_find_peer().
-                             * During a2dp_stream reconnect retries Bluedroid runs its own
-                             * internal inquiry; overwriting s_peer_bda with a different
-                             * nearby sink or cancelling the scan would corrupt the target
-                             * address or abort the connect procedure. */
-                            if (__atomic_load_n(&s_find_peer_active, __ATOMIC_SEQ_CST)) {
+                            /* Atomically clear the flag so subsequent callbacks fired
+                             * before cancel takes effect are ignored — esp_bt_gap_cancel_discovery()
+                             * is async and more sink events can arrive in the window before
+                             * it completes.  When s_find_peer_active is already 0 (Bluedroid
+                             * internal inquiry during reconnect) the exchange returns 0 and
+                             * we fall through without touching s_peer_bda or the scan. */
+                            if (__atomic_exchange_n(&s_find_peer_active, 0u, __ATOMIC_SEQ_CST)) {
                                 ESP_LOGI(TAG, "A2DP Sink found: %s", bda_str);
                                 memcpy(s_peer_bda, bda, 6);
                                 esp_bt_gap_cancel_discovery();
