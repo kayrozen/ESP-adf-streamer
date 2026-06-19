@@ -39,18 +39,35 @@ CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=n
 # Controller memory for Classic BT
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 
-# WiFi — reduced dynamic buffer caps to limit peak internal DRAM pressure.
-# Dynamic buffers are allocated on demand; the cap is what matters.
-# Static RX kept at 8 (proven in PR #6) — these are reserved, and dropping
-# below 8 risks losing management frames under BT/WiFi coexistence.
-# Dynamic TX cut to 4: we receive audio (HTTP), TX is only ACKs (~40 bytes).
-# 4 × 1.6KB = 6.4KB peak TX vs 12.8KB with 8 — frees 6.4KB for lwIP.
-CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=8
-CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
-CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=4
-CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
-CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
+# WiFi — switch TX buffers from static to dynamic to free internal DRAM.
+#
+# IMPORTANT (root cause of log 18): these symbols were renamed in ESP-IDF v5
+# from CONFIG_ESP32_WIFI_* to CONFIG_ESP_WIFI_*. The old names are silently
+# ignored, which is why the previous "CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1" never
+# took effect — log 18 still booted with a static 16-buffer TX pool (25.6 KB of
+# internal DRAM pinned at wifi init). On top of the rename, *_TX_BUFFER_TYPE is
+# a derived, prompt-less int that cannot be set directly; the TX buffer mode is
+# selected via the ESP_WIFI_*_TX_BUFFER *choice* symbol below.
+#
+# Receive-only audio path (HTTP GET): TX is just ACKs (~40 bytes), so a small
+# on-demand dynamic pool is plenty. Dynamic 4 × 1.6KB = 6.4KB peak, allocated
+# only when needed, vs a permanent 16 × 1.6KB = 25.6KB static reservation.
+# This frees ~19KB of the internal DRAM that BT+lwIP were starved of.
+#
+# Static RX kept at 8 (proven in PR #6) — reserved buffers; dropping below 8
+# risks losing management frames under BT/WiFi coexistence.
+#
+# VERIFY after a clean rebuild: the wifi init log MUST read
+#   "Init dynamic tx buffer num: 4"  (NOT "Init static tx buffer num: 16").
+# Because the generated sdkconfig is gitignored, sdkconfig.defaults is only
+# re-applied when no sdkconfig exists — run `idf.py fullclean` (or delete
+# sdkconfig + build/) on the build machine so these defaults take effect.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
 # lwIP — halve per-socket TCP window/send buffer to cut peak pbuf usage.
 # MSS is 1440 here, so the default window is 4*MSS (5760). Drop to 2*MSS
