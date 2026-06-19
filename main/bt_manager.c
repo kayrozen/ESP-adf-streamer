@@ -1,7 +1,9 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_bt_device.h"
@@ -14,20 +16,36 @@ static const char *TAG = "bt_mgr";
 #define BT_FOUND_BIT      BIT0
 #define A2DP_CONN_BIT     BIT1
 
+/* Per-attempt budget for a full A2DP source connection: the BR/EDR page alone
+ * can take ~5.12 s (8192 slots * 0.625 ms), and SDP + AVDTP signalling follow.
+ * Must comfortably exceed the whole sequence or we abort a handshake that is
+ * still in flight. */
+#define A2DP_CONNECT_TIMEOUT_MS   8000
+
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
 static uint32_t s_a2dp_connected = 0;
 static uint32_t s_a2dp_connect_pending = 0;
+/* esp_timer timestamp (us) when s_a2dp_connect_pending was last set.  Written
+ * only by the thread that claims the pending lock; used to detect a connect
+ * that reached CONNECTING but whose terminal CONNECTED/DISCONNECTED event was
+ * lost, so a stuck flag can never wedge reconnection forever. */
+static volatile int64_t s_a2dp_pending_since_us = 0;
 /* Set while bt_manager_find_peer() is actively scanning so the GAP callback
- * knows not to interfere with Bluedroid's internal discovery (e.g. SDP lookup
- * triggered by esp_a2d_source_connect() retries). */
+ * knows not to interfere with any stack-internal inquiry. */
 static uint32_t s_find_peer_active = 0;
-/* Set by the GAP auth-fail handler when pairing with s_peer_bda fails due to
- * a link-key mismatch.  Consumed (cleared) by bt_manager_reconnect_a2dp() on
- * the next attempt so the stale bond is removed only when actually needed. */
+/* Set by the GAP auth-fail handler when pairing with s_peer_bda fails due to a
+ * link-key mismatch; consumed before the next connect so a stale bond is
+ * removed only when it actually blocked us, not on every attempt. */
 static uint32_t s_clear_bond_on_connect = 0;
 
-/* ---- GAP callback ---- */
+/* ---- GAP callback ----
+ * Ownership note: bt_manager owns the controller, Bluedroid, GAP and SSP.  The
+ * A2DP profile (esp_a2d_source_init, the esp_a2d callback and the PCM data
+ * callback) is owned by the ADF a2dp_stream element because the audio data must
+ * originate from the pipeline.  bt_manager observes A2DP state through
+ * bt_manager_a2dp_state_cb, which pipeline.c registers as a2dp_stream's
+ * user_a2d_cb, and drives the connection lifecycle from here. */
 
 static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
@@ -38,7 +56,6 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 
     switch (event) {
     case ESP_BT_GAP_DISC_RES_EVT: {
-        /* Log every discovered device */
         char bda_str[18];
         uint8_t *bda = param->disc_res.bda;
         if (!bda) {
@@ -49,9 +66,11 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
         ESP_LOGI(TAG, "Found device: %s", bda_str);
 
-        /* Check EIR/UUIDs for A2DP sink (UUID 0x110B).
-         * IDF 5.x: esp_bt_gap_resolve_eir_data() returns a pointer to the
-         * UUID list (or NULL) and writes the byte-length into rlen. */
+        /* Only act on discovery results while WE are scanning for a peer.
+         * Check EIR/UUIDs for the A2DP Sink service (UUID 0x110B). */
+        if (!__atomic_load_n(&s_find_peer_active, __ATOMIC_SEQ_CST)) {
+            break;
+        }
         for (int i = 0; i < param->disc_res.num_prop; i++) {
             esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
             if (p && p->type == ESP_BT_GAP_DEV_PROP_EIR && p->val) {
@@ -64,16 +83,12 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                         eir, ESP_BT_EIR_TYPE_CMPL_16BITS_UUID, &rlen);
                 }
                 if (uuids && rlen >= 2) {
-                    /* 0x110B = A2DP Sink */
                     for (int j = 0; j + 1 < rlen; j += 2) {
                         uint16_t u = uuids[j] | (uuids[j + 1] << 8);
-                        if (u == 0x110B) {
-                            /* Atomically clear the flag so subsequent callbacks fired
-                             * before cancel takes effect are ignored — esp_bt_gap_cancel_discovery()
-                             * is async and more sink events can arrive in the window before
-                             * it completes.  When s_find_peer_active is already 0 (Bluedroid
-                             * internal inquiry during reconnect) the exchange returns 0 and
-                             * we fall through without touching s_peer_bda or the scan. */
+                        if (u == 0x110B) {  /* A2DP Sink */
+                            /* Claim-and-clear so only the first match wins; later
+                             * results arriving before cancel takes effect are
+                             * ignored (cancel_discovery is asynchronous). */
                             if (__atomic_exchange_n(&s_find_peer_active, 0u, __ATOMIC_SEQ_CST)) {
                                 ESP_LOGI(TAG, "A2DP Sink found: %s", bda_str);
                                 memcpy(s_peer_bda, bda, 6);
@@ -81,8 +96,6 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                                 if (s_bt_event_group) {
                                     xEventGroupSetBits(s_bt_event_group, BT_FOUND_BIT);
                                 }
-                            } else {
-                                ESP_LOGD(TAG, "A2DP Sink seen during reconnect scan: %s (not interrupting)", bda_str);
                             }
                             return;
                         }
@@ -102,10 +115,9 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             ESP_LOGI(TAG, "Auth OK with: %s",
                      param->auth_cmpl.device_name ? (char *)param->auth_cmpl.device_name : "unknown");
         } else {
-            ESP_LOGW(TAG, "Auth failed (stat=%d) with peer", param->auth_cmpl.stat);
-            /* Schedule bond removal only for our configured sink; the removal
-             * itself happens at the next bt_manager_reconnect_a2dp() call so
-             * we do not spam NVS on every transient auth hiccup. */
+            ESP_LOGW(TAG, "Auth failed (stat=%d)", param->auth_cmpl.stat);
+            /* Schedule a bond removal for our sink only; performed lazily before
+             * the next connect so we never spam NVS on transient failures. */
             if (memcmp(param->auth_cmpl.bda, s_peer_bda, 6) == 0) {
                 __atomic_store_n(&s_clear_bond_on_connect, 1u, __ATOMIC_SEQ_CST);
             }
@@ -120,7 +132,6 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         ESP_LOGI(TAG, "SSP passkey: %06lu", (unsigned long)param->key_notif.passkey);
         break;
     case ESP_BT_GAP_KEY_REQ_EVT:
-        /* Passkey entry — send 0000 (legacy fallback) */
         ESP_LOGI(TAG, "SSP passkey request — entering 0000");
         esp_bt_gap_ssp_passkey_reply(param->key_req.bda, true, 0);
         break;
@@ -130,10 +141,8 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 }
 
 /* ---- A2DP connection-state observer ----
- * The ADF a2dp_stream element owns the esp_a2d callback (it registers its own
- * in a2dp_stream_init and re-inits AVRC).  We are invoked as a2dp_stream's
- * user_a2d_cb so bt_manager can still track connection state for the stall
- * detector and bt_manager_is_a2dp_connected(). */
+ * Invoked by a2dp_stream as its user_a2d_cb.  Translates esp_a2d connection
+ * events into the event-group bits the connection driver waits on. */
 void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
     if (!param) {
@@ -143,30 +152,38 @@ void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *para
 
     switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
-        if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTING) {
+        switch (param->conn_stat.state) {
+        case ESP_A2D_CONNECTION_STATE_CONNECTING:
             ESP_LOGI(TAG, "A2DP connecting");
             __atomic_store_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST);
-        } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            break;
+        case ESP_A2D_CONNECTION_STATE_CONNECTED:
             ESP_LOGI(TAG, "A2DP connected");
             __atomic_store_n(&s_a2dp_connected, 1u, __ATOMIC_SEQ_CST);
             __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             if (s_bt_event_group) {
                 xEventGroupSetBits(s_bt_event_group, A2DP_CONN_BIT);
             }
-        } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+            break;
+        case ESP_A2D_CONNECTION_STATE_DISCONNECTING:
+            ESP_LOGI(TAG, "A2DP disconnecting");
+            break;
+        case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
+        default:
             ESP_LOGW(TAG, "A2DP disconnected");
             __atomic_store_n(&s_a2dp_connected, 0u, __ATOMIC_SEQ_CST);
             __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             if (s_bt_event_group) {
                 xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
             }
+            break;
         }
         break;
     case ESP_A2D_AUDIO_STATE_EVT:
         ESP_LOGI(TAG, "A2DP audio state: %d", param->audio_stat.state);
         break;
-    case ESP_A2D_AUDIO_CFG_EVT:
-        ESP_LOGI(TAG, "A2DP audio cfg: type=%d", param->audio_cfg.mcc.type);
+    case ESP_A2D_PROF_STATE_EVT:
+        ESP_LOGI(TAG, "A2DP profile state: %d", param->a2d_prof_stat.init_state);
         break;
     default:
         break;
@@ -188,7 +205,7 @@ esp_err_t bt_manager_init(const char *device_name)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Release BLE memory — we only use Classic BT */
+    /* Release BLE memory — Classic BT only */
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
@@ -197,34 +214,24 @@ esp_err_t bt_manager_init(const char *device_name)
     ESP_ERROR_CHECK(esp_bluedroid_init());
     ESP_ERROR_CHECK(esp_bluedroid_enable());
 
+    /* GAP is owned here; the A2DP profile + callbacks are owned by a2dp_stream. */
     ESP_ERROR_CHECK(esp_bt_gap_register_callback(gap_callback));
 
-    /* IO capability = None → forces "Just Works" SSP (no PIN/confirmation needed).
-     * Must be set before any connection attempt so the speaker accepts us. */
+    /* IO capability = None → "Just Works" SSP (no PIN/confirmation). */
     esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
     ESP_ERROR_CHECK(esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(iocap)));
 
-    /* Legacy PIN fallback for older speakers that use PIN-based pairing.
-     * esp_bt_pin_code_t is uint8_t[16]; must pass a properly-sized array. */
+    /* Legacy PIN fallback for older PIN-based speakers. */
     esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
     esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin);
 
-    /* NOTE: A2DP source init, the esp_a2d callback, and AVRC init are owned by
-     * the ADF a2dp_stream element (a2dp_stream_init does all three).  We must
-     * NOT register them here — doing so previously got silently overridden when
-     * a2dp_stream_init ran later, so our callback never fired and AVRC was
-     * double-initialized ("btc_avrc_ct_init already initialized").  bt_manager
-     * observes connection state via bt_manager_a2dp_state_cb, which pipeline.c
-     * passes as a2dp_stream's user_a2d_cb. */
-
     esp_bt_gap_set_device_name(device_name);
 
-    /* A2DP SOURCE should initiate connections, not advertise itself.  Staying
-     * GENERAL_DISCOVERABLE invites the speaker (and other devices) to inquire
-     * and initiate, which can flip us into the slave role and contend with our
-     * own outgoing connect.  Remain CONNECTABLE so the sink can re-establish
-     * AVRC/A2DP after we connect, but NON_DISCOVERABLE so nothing inquires us. */
-    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+    /* Match the canonical ESP-IDF a2dp_source example: an A2DP SOURCE always
+     * initiates, so it neither advertises (discoverable) nor accepts incoming
+     * pages (connectable).  Being connectable previously let the idle speaker
+     * try to initiate back to us mid-page and contend for the link. */
+    esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
 
     ESP_LOGI(TAG, "BT initialized as \"%s\"", device_name);
     return ESP_OK;
@@ -239,7 +246,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
 
     static const uint8_t zero_bda[6] = {0};
 
-    /* If a non-zero address was provided, use it directly */
+    /* Configured address provided → use it directly, no inquiry. */
     if (memcmp(peer_bda, zero_bda, 6) != 0) {
         memcpy(s_peer_bda, peer_bda, 6);
         ESP_LOGI(TAG, "Using configured peer BDA");
@@ -247,10 +254,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
         return ESP_OK;
     }
 
-    /* GAP discovery duration is limited to 30s by the API.
-     * esp_bt_gap_start_discovery() duration parameter is in 1.28s units. */
     int discovery_duration_s = (timeout_s > 30) ? 30 : (int)timeout_s;
-    /* Convert seconds to 1.28s units for the API: duration * 1000 / 1280 = duration * 0.78125 */
     uint8_t discovery_duration_units = (uint8_t)(discovery_duration_s * 1000 / 1280);
     if (discovery_duration_units == 0) discovery_duration_units = 1;
     ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s, %d units)...", discovery_duration_s, discovery_duration_units);
@@ -278,33 +282,42 @@ const uint8_t *bt_manager_get_peer_bda(void)
     return s_peer_bda;
 }
 
-esp_err_t bt_manager_reconnect_a2dp(void)
+/* Fire a single esp_a2d_source_connect() to the configured peer.  Returns
+ * ESP_OK if the request was accepted by the stack (connection completes
+ * asynchronously via bt_manager_a2dp_state_cb), not that the link is up. */
+esp_err_t bt_manager_connect_a2dp(void)
 {
     static const uint8_t zero_bda[6] = {0};
     if (memcmp(s_peer_bda, zero_bda, 6) == 0) {
-        ESP_LOGW(TAG, "reconnect_a2dp: no peer BDA configured");
+        ESP_LOGW(TAG, "connect: no peer BDA configured");
         return ESP_ERR_INVALID_STATE;
     }
-    /* Acquire the pending lock first; then double-check connected under the lock.
-     * This closes the window where a CONNECTED callback fires between the
-     * connected check and the exchange, which would leave pending=1 and trigger
-     * a duplicate esp_a2d_source_connect() on an already-live link. */
-    if (__atomic_exchange_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST)) {
-        ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
-        return ESP_OK;
-    }
     if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
-        ESP_LOGD(TAG, "A2DP already connected — skipping reconnect");
+        return ESP_OK;  /* already up */
+    }
+    /* Claim the pending lock.  If it was already held, only honour it while it
+     * is fresh: a connect that reached CONNECTING but whose terminal event was
+     * lost would otherwise leave the flag stuck at 1 forever, turning every
+     * future reconnect attempt (e.g. from the stall detector) into a no-op. */
+    int64_t now = esp_timer_get_time();
+    if (__atomic_exchange_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST)) {
+        if ((now - s_a2dp_pending_since_us) < (int64_t)A2DP_CONNECT_TIMEOUT_MS * 1000) {
+            ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "Stale pending connect (lost terminal event) — re-issuing");
+    }
+    s_a2dp_pending_since_us = now;
+
+    /* Re-check connected under the lock to close the window where a CONNECTED
+     * callback fires between the fast-path check above and the exchange. */
+    if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
     }
-    /* Remove the stored bond only if a previous attempt ended with an auth /
-     * link-key failure (flag set by gap_callback ESP_BT_GAP_AUTH_CMPL_EVT).
-     * Unconditional removal causes (a) re-pairing rejection on speakers that
-     * guard against bond hijacking, (b) extra LMP round-trips on every connect,
-     * and (c) needless NVS flash wear. */
+    /* Clear a stale bond only if a prior attempt failed authentication. */
     if (__atomic_exchange_n(&s_clear_bond_on_connect, 0u, __ATOMIC_SEQ_CST)) {
-        ESP_LOGW(TAG, "Auth failed on last attempt — clearing stale bond before reconnect");
+        ESP_LOGW(TAG, "Clearing stale bond after prior auth failure");
         esp_bt_gap_remove_bond_device(s_peer_bda);
     }
 
@@ -313,9 +326,64 @@ esp_err_t bt_manager_reconnect_a2dp(void)
              s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
     esp_err_t err = esp_a2d_source_connect(s_peer_bda);
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_a2d_source_connect failed: %s", esp_err_to_name(err));
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
     }
     return err;
+}
+
+esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
+{
+    static const uint8_t zero_bda[6] = {0};
+    if (memcmp(s_peer_bda, zero_bda, 6) == 0) {
+        ESP_LOGE(TAG, "connect: no peer BDA configured");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (max_attempts < 1) max_attempts = 1;
+
+    for (int attempt = 1; attempt <= max_attempts; attempt++) {
+        if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
+            return ESP_OK;
+        }
+
+        ESP_LOGI(TAG, "A2DP connect attempt %d/%d", attempt, max_attempts);
+        xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
+
+        esp_err_t err = bt_manager_connect_a2dp();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            /* Request was rejected outright (e.g. busy) — back off and retry. */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        EventBits_t bits = xEventGroupWaitBits(s_bt_event_group, A2DP_CONN_BIT,
+                                               pdFALSE, pdFALSE,
+                                               pdMS_TO_TICKS(A2DP_CONNECT_TIMEOUT_MS));
+        if (bits & A2DP_CONN_BIT) {
+            ESP_LOGI(TAG, "A2DP connected on attempt %d", attempt);
+            return ESP_OK;
+        }
+
+        /* Wait expired without CONNECTED.  Re-check the flag before tearing
+         * anything down: a CONNECTED callback can race in just after
+         * xEventGroupWaitBits returns on timeout, and we must not disconnect a
+         * link that just came up. */
+        if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
+            ESP_LOGI(TAG, "A2DP connected (raced past timeout) on attempt %d", attempt);
+            return ESP_OK;
+        }
+
+        /* Genuinely no connection within the budget (manifests as SDP conn cnf
+         * 0x4 / BTA_AV_OPEN status 2).  Tear down the half-open attempt and
+         * retry — the sink's page scan is intermittent while it sits idle. */
+        ESP_LOGW(TAG, "A2DP attempt %d timed out (no connection) — retrying", attempt);
+        esp_a2d_source_disconnect(s_peer_bda);
+        __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+    }
+
+    ESP_LOGE(TAG, "A2DP not connected after %d attempts", max_attempts);
+    return ESP_ERR_TIMEOUT;
 }
 
 bool bt_manager_is_a2dp_connected(void)
