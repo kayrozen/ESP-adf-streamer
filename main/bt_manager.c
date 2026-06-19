@@ -17,8 +17,8 @@ static const char *TAG = "bt_mgr";
 
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
-static volatile bool s_a2dp_connected = false;
-static volatile bool s_a2dp_connect_pending = false;
+static bool s_a2dp_connected = false;
+static bool s_a2dp_connect_pending = false;
 
 /* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
 
@@ -125,7 +125,10 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 
     switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
-        if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+        if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTING) {
+            ESP_LOGI(TAG, "A2DP connecting");
+            __atomic_store_n(&s_a2dp_connect_pending, true, __ATOMIC_SEQ_CST);
+        } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             ESP_LOGI(TAG, "A2DP connected");
             __atomic_store_n(&s_a2dp_connected, true, __ATOMIC_SEQ_CST);
             __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
