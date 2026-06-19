@@ -102,7 +102,11 @@ static audio_element_handle_t create_a2dp_stream(void)
      * task_stack / task_prio are not fields of this struct. */
     a2dp_stream_config_t cfg = {
         .type          = AUDIO_STREAM_WRITER,  /* source: we push PCM to BT */
-        .user_callback = { 0 },
+        .user_callback = {
+            /* a2dp_stream owns the esp_a2d callback; it invokes this on
+             * connection-state events so bt_manager can track link state. */
+            .user_a2d_cb = bt_manager_a2dp_state_cb,
+        },
         .audio_hal     = NULL,
     };
     return a2dp_stream_init(&cfg);

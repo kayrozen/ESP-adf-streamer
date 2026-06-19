@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "esp_a2dp_api.h"
 
 /**
  * Initialize the Classic Bluetooth stack (Bluedroid).
@@ -26,6 +27,13 @@ const uint8_t *bt_manager_get_peer_bda(void);
 
 /** True if A2DP connection is currently established. */
 bool bt_manager_is_a2dp_connected(void);
+
+/**
+ * A2DP connection-state observer.  The ADF a2dp_stream element owns the
+ * esp_a2d callback; pass this as a2dp_stream_config_t.user_callback.user_a2d_cb
+ * so bt_manager can track connection state (esp_a2d_cb_t signature).
+ */
+void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
 
 /**
  * Retry esp_a2d_source_connect() to the configured peer BDA.

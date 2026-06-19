@@ -7,7 +7,6 @@
 #include "esp_bt_device.h"
 #include "esp_gap_bt_api.h"
 #include "esp_a2dp_api.h"
-#include "esp_avrc_api.h"
 #include "bt_manager.h"
 
 static const char *TAG = "bt_mgr";
@@ -23,14 +22,10 @@ static uint32_t s_a2dp_connect_pending = 0;
  * knows not to interfere with Bluedroid's internal discovery (e.g. SDP lookup
  * triggered by esp_a2d_source_connect() retries). */
 static uint32_t s_find_peer_active = 0;
-
-/* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
-
-static void avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param)
-{
-    (void)event;
-    (void)param;
-}
+/* Set by the GAP auth-fail handler when pairing with s_peer_bda fails due to
+ * a link-key mismatch.  Consumed (cleared) by bt_manager_reconnect_a2dp() on
+ * the next attempt so the stale bond is removed only when actually needed. */
+static uint32_t s_clear_bond_on_connect = 0;
 
 /* ---- GAP callback ---- */
 
@@ -107,7 +102,13 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             ESP_LOGI(TAG, "Auth OK with: %s",
                      param->auth_cmpl.device_name ? (char *)param->auth_cmpl.device_name : "unknown");
         } else {
-            ESP_LOGW(TAG, "Auth failed: %d", param->auth_cmpl.stat);
+            ESP_LOGW(TAG, "Auth failed (stat=%d) with peer", param->auth_cmpl.stat);
+            /* Schedule bond removal only for our configured sink; the removal
+             * itself happens at the next bt_manager_reconnect_a2dp() call so
+             * we do not spam NVS on every transient auth hiccup. */
+            if (memcmp(param->auth_cmpl.bda, s_peer_bda, 6) == 0) {
+                __atomic_store_n(&s_clear_bond_on_connect, 1u, __ATOMIC_SEQ_CST);
+            }
         }
         break;
     case ESP_BT_GAP_CFM_REQ_EVT:
@@ -128,9 +129,12 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
     }
 }
 
-/* ---- A2DP callback ---- */
-
-static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
+/* ---- A2DP connection-state observer ----
+ * The ADF a2dp_stream element owns the esp_a2d callback (it registers its own
+ * in a2dp_stream_init and re-inits AVRC).  We are invoked as a2dp_stream's
+ * user_a2d_cb so bt_manager can still track connection state for the stall
+ * detector and bt_manager_is_a2dp_connected(). */
+void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
     if (!param) {
         ESP_LOGW(TAG, "A2DP callback with NULL param");
@@ -205,18 +209,22 @@ esp_err_t bt_manager_init(const char *device_name)
     esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
     esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin);
 
-    /* AVRC must be initialized before A2DP — many speakers check for AVRC
-     * in our SDP record and refuse the A2DP connection if it's missing. */
-    ESP_ERROR_CHECK(esp_avrc_ct_init());
-    ESP_ERROR_CHECK(esp_avrc_ct_register_callback(avrc_ct_callback));
-
-    ESP_ERROR_CHECK(esp_a2d_register_callback(a2dp_callback));
-    ESP_ERROR_CHECK(esp_a2d_source_init());
+    /* NOTE: A2DP source init, the esp_a2d callback, and AVRC init are owned by
+     * the ADF a2dp_stream element (a2dp_stream_init does all three).  We must
+     * NOT register them here — doing so previously got silently overridden when
+     * a2dp_stream_init ran later, so our callback never fired and AVRC was
+     * double-initialized ("btc_avrc_ct_init already initialized").  bt_manager
+     * observes connection state via bt_manager_a2dp_state_cb, which pipeline.c
+     * passes as a2dp_stream's user_a2d_cb. */
 
     esp_bt_gap_set_device_name(device_name);
 
-    /* Make discoverable + connectable */
-    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    /* A2DP SOURCE should initiate connections, not advertise itself.  Staying
+     * GENERAL_DISCOVERABLE invites the speaker (and other devices) to inquire
+     * and initiate, which can flip us into the slave role and contend with our
+     * own outgoing connect.  Remain CONNECTABLE so the sink can re-establish
+     * AVRC/A2DP after we connect, but NON_DISCOVERABLE so nothing inquires us. */
+    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
 
     ESP_LOGI(TAG, "BT initialized as \"%s\"", device_name);
     return ESP_OK;
@@ -290,6 +298,16 @@ esp_err_t bt_manager_reconnect_a2dp(void)
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
     }
+    /* Remove the stored bond only if a previous attempt ended with an auth /
+     * link-key failure (flag set by gap_callback ESP_BT_GAP_AUTH_CMPL_EVT).
+     * Unconditional removal causes (a) re-pairing rejection on speakers that
+     * guard against bond hijacking, (b) extra LMP round-trips on every connect,
+     * and (c) needless NVS flash wear. */
+    if (__atomic_exchange_n(&s_clear_bond_on_connect, 0u, __ATOMIC_SEQ_CST)) {
+        ESP_LOGW(TAG, "Auth failed on last attempt — clearing stale bond before reconnect");
+        esp_bt_gap_remove_bond_device(s_peer_bda);
+    }
+
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
              s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
              s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
