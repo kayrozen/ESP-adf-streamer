@@ -22,6 +22,10 @@ static uint32_t s_a2dp_connect_pending = 0;
  * knows not to interfere with Bluedroid's internal discovery (e.g. SDP lookup
  * triggered by esp_a2d_source_connect() retries). */
 static uint32_t s_find_peer_active = 0;
+/* Set by the GAP auth-fail handler when pairing with s_peer_bda fails due to
+ * a link-key mismatch.  Consumed (cleared) by bt_manager_reconnect_a2dp() on
+ * the next attempt so the stale bond is removed only when actually needed. */
+static uint32_t s_clear_bond_on_connect = 0;
 
 /* ---- GAP callback ---- */
 
@@ -98,7 +102,13 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             ESP_LOGI(TAG, "Auth OK with: %s",
                      param->auth_cmpl.device_name ? (char *)param->auth_cmpl.device_name : "unknown");
         } else {
-            ESP_LOGW(TAG, "Auth failed: %d", param->auth_cmpl.stat);
+            ESP_LOGW(TAG, "Auth failed (stat=%d) with peer", param->auth_cmpl.stat);
+            /* Schedule bond removal only for our configured sink; the removal
+             * itself happens at the next bt_manager_reconnect_a2dp() call so
+             * we do not spam NVS on every transient auth hiccup. */
+            if (memcmp(param->auth_cmpl.bda, s_peer_bda, 6) == 0) {
+                __atomic_store_n(&s_clear_bond_on_connect, 1u, __ATOMIC_SEQ_CST);
+            }
         }
         break;
     case ESP_BT_GAP_CFM_REQ_EVT:
@@ -288,13 +298,15 @@ esp_err_t bt_manager_reconnect_a2dp(void)
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
     }
-    /* Clear any stale bond for this peer before connecting.  A speaker that
-     * still holds an old link key for our MAC rejects the SDP/L2CAP channel
-     * with L2CAP_CONN_NO_RESOURCES (BT_SDP error 0x4 / BTA_AV_OPEN status 2),
-     * which presents as "connect fails, no audio" even though the sink is idle
-     * and discoverable.  Removing the bond forces a fresh Just-Works pairing on
-     * both ends.  Harmless if no bond exists (returns ESP_FAIL, ignored). */
-    esp_bt_gap_remove_bond_device(s_peer_bda);
+    /* Remove the stored bond only if a previous attempt ended with an auth /
+     * link-key failure (flag set by gap_callback ESP_BT_GAP_AUTH_CMPL_EVT).
+     * Unconditional removal causes (a) re-pairing rejection on speakers that
+     * guard against bond hijacking, (b) extra LMP round-trips on every connect,
+     * and (c) needless NVS flash wear. */
+    if (__atomic_exchange_n(&s_clear_bond_on_connect, 0u, __ATOMIC_SEQ_CST)) {
+        ESP_LOGW(TAG, "Auth failed on last attempt — clearing stale bond before reconnect");
+        esp_bt_gap_remove_bond_device(s_peer_bda);
+    }
 
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
              s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
