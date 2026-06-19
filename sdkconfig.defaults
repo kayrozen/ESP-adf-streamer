@@ -52,14 +52,17 @@ CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=4
 CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
 
-# lwIP — shrink per-socket TCP buffers to save internal DRAM.
-# For 128kbps audio (16KB/s), a 2KB TCP window = ~125ms of data, well within
-# the 24KB PSRAM jitter buffer (~1.5s). These options reduce the amount of
-# data the server sends before needing an ACK, cutting peak pbuf usage.
-CONFIG_LWIP_TCP_WND_DEFAULT=2048
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2048
-# Reduce the lwIP TCPIP task mailbox (was 32, each slot wastes queue RAM).
-CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
+# lwIP — halve per-socket TCP window/send buffer to cut peak pbuf usage.
+# MSS is 1440 here, so the default window is 4*MSS (5760). Drop to 2*MSS
+# (2880), NOT a sub-2*MSS value: a window < 2*MSS prevents lwIP's
+# "ACK every 2nd segment" fast path, forcing every ACK to wait for the
+# 200ms delayed-ACK timer — that caps throughput near 14KB/s and would
+# starve 128kbps audio (16KB/s). 2*MSS keeps the fast path while halving
+# the in-flight data the server can send before an ACK, reducing peak
+# PBUF_POOL allocation. 2880B ≈ 180ms @128kbps, well inside the 24KB
+# PSRAM jitter buffer (~1.5s).
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
 # Audio pipeline — allow element task stacks to be allocated in PSRAM.
 # Without this, BT+WiFi exhaust internal DRAM and audio thread creation fails.
