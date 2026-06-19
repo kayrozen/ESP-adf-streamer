@@ -39,33 +39,36 @@ CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=n
 # Controller memory for Classic BT
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 
-# WiFi — switch TX buffers from static to dynamic to free internal DRAM.
+# WiFi — PSRAM forces STATIC TX buffers, so shrink the static pool instead.
 #
-# IMPORTANT (root cause of log 18): these symbols were renamed in ESP-IDF v5
-# from CONFIG_ESP32_WIFI_* to CONFIG_ESP_WIFI_*. The old names are silently
-# ignored, which is why the previous "CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1" never
-# took effect — log 18 still booted with a static 16-buffer TX pool (25.6 KB of
-# internal DRAM pinned at wifi init). On top of the rename, *_TX_BUFFER_TYPE is
-# a derived, prompt-less int that cannot be set directly; the TX buffer mode is
-# selected via the ESP_WIFI_*_TX_BUFFER *choice* symbol below.
+# The trap that bit logs 18 AND 20: we tried to switch TX to dynamic to free
+# internal DRAM, but ESP-IDF v5.3.1 gates dynamic TX behind
+#     config ESP_WIFI_DYNAMIC_TX_BUFFER
+#         depends on !SPIRAM_USE_MALLOC
+# and we run CONFIG_SPIRAM_USE_MALLOC=y. So CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+# is silently dropped (unmet dependency) and the choice falls back to STATIC 16
+# = 25.6KB of internal DRAM pinned at wifi init — exactly what every log kept
+# showing ("Init static tx buffer num: 16"), even though CI builds clean. The
+# IDF help confirms it: "If PSRAM is enabled, Static should be selected."
 #
-# Receive-only audio path (HTTP GET): TX is just ACKs (~40 bytes), so a small
-# on-demand dynamic pool is plenty. Dynamic 4 × 1.6KB = 6.4KB peak, allocated
-# only when needed, vs a permanent 16 × 1.6KB = 25.6KB static reservation.
-# This frees ~19KB of the internal DRAM that BT+lwIP were starved of.
+# Dynamic is therefore off the table. Free DRAM by cutting the STATIC TX pool
+# from 16 to 6. We receive audio (HTTP GET); TX is only TCP ACKs (~40B), so 6
+# buffers is ample. 6 × 1.6KB = 9.6KB vs 16 × 1.6KB = 25.6KB → frees ~16KB of
+# internal DRAM, lifting the streaming-phase floor from ~26KB (where log 20
+# crashed in lwIP after ~1s of audio) to ~42KB.
 #
-# Static RX kept at 8 (proven in PR #6) — reserved buffers; dropping below 8
-# risks losing management frames under BT/WiFi coexistence.
+# Static RX kept at 8 — these hold inbound audio frames; dropping them risks
+# losing data under BT/WiFi coexistence.
 #
-# VERIFY after a clean rebuild: the wifi init log MUST read
-#   "Init dynamic tx buffer num: 4"  (NOT "Init static tx buffer num: 16").
-# Because the generated sdkconfig is gitignored, sdkconfig.defaults is only
-# re-applied when no sdkconfig exists — run `idf.py fullclean` (or delete
-# sdkconfig + build/) on the build machine so these defaults take effect.
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+# If "wifi:m f null" becomes frequent under load, bump STATIC_TX_BUFFER_NUM
+# back toward 8–10 (trading some reclaimed DRAM for TX headroom).
+#
+# VERIFY in the next log: wifi init must read "Init static tx buffer num: 6"
+# and "monitor: HEAP@start internal: ~42 KB" (was 26 KB).
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
