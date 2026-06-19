@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_bt_device.h"
@@ -15,15 +16,21 @@ static const char *TAG = "bt_mgr";
 #define BT_FOUND_BIT      BIT0
 #define A2DP_CONN_BIT     BIT1
 
-/* A BR/EDR page attempt times out after ~5.12 s (8192 slots * 0.625 ms).  Each
- * connect attempt must wait longer than that before declaring failure, or we
- * abort a page that is still in flight. */
-#define A2DP_PAGE_TIMEOUT_MS   6000
+/* Per-attempt budget for a full A2DP source connection: the BR/EDR page alone
+ * can take ~5.12 s (8192 slots * 0.625 ms), and SDP + AVDTP signalling follow.
+ * Must comfortably exceed the whole sequence or we abort a handshake that is
+ * still in flight. */
+#define A2DP_CONNECT_TIMEOUT_MS   8000
 
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
 static uint32_t s_a2dp_connected = 0;
 static uint32_t s_a2dp_connect_pending = 0;
+/* esp_timer timestamp (us) when s_a2dp_connect_pending was last set.  Written
+ * only by the thread that claims the pending lock; used to detect a connect
+ * that reached CONNECTING but whose terminal CONNECTED/DISCONNECTED event was
+ * lost, so a stuck flag can never wedge reconnection forever. */
+static volatile int64_t s_a2dp_pending_since_us = 0;
 /* Set while bt_manager_find_peer() is actively scanning so the GAP callback
  * knows not to interfere with any stack-internal inquiry. */
 static uint32_t s_find_peer_active = 0;
@@ -285,11 +292,25 @@ esp_err_t bt_manager_connect_a2dp(void)
         ESP_LOGW(TAG, "connect: no peer BDA configured");
         return ESP_ERR_INVALID_STATE;
     }
-    /* Claim the pending lock first, then re-check connected under it. */
-    if (__atomic_exchange_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST)) {
-        ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
-        return ESP_OK;
+    if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
+        return ESP_OK;  /* already up */
     }
+    /* Claim the pending lock.  If it was already held, only honour it while it
+     * is fresh: a connect that reached CONNECTING but whose terminal event was
+     * lost would otherwise leave the flag stuck at 1 forever, turning every
+     * future reconnect attempt (e.g. from the stall detector) into a no-op. */
+    int64_t now = esp_timer_get_time();
+    if (__atomic_exchange_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST)) {
+        if ((now - s_a2dp_pending_since_us) < (int64_t)A2DP_CONNECT_TIMEOUT_MS * 1000) {
+            ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "Stale pending connect (lost terminal event) — re-issuing");
+    }
+    s_a2dp_pending_since_us = now;
+
+    /* Re-check connected under the lock to close the window where a CONNECTED
+     * callback fires between the fast-path check above and the exchange. */
     if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
@@ -337,16 +358,25 @@ esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
 
         EventBits_t bits = xEventGroupWaitBits(s_bt_event_group, A2DP_CONN_BIT,
                                                pdFALSE, pdFALSE,
-                                               pdMS_TO_TICKS(A2DP_PAGE_TIMEOUT_MS));
+                                               pdMS_TO_TICKS(A2DP_CONNECT_TIMEOUT_MS));
         if (bits & A2DP_CONN_BIT) {
             ESP_LOGI(TAG, "A2DP connected on attempt %d", attempt);
             return ESP_OK;
         }
 
-        /* No ACL came up within the page timeout (manifests as SDP conn cnf
+        /* Wait expired without CONNECTED.  Re-check the flag before tearing
+         * anything down: a CONNECTED callback can race in just after
+         * xEventGroupWaitBits returns on timeout, and we must not disconnect a
+         * link that just came up. */
+        if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
+            ESP_LOGI(TAG, "A2DP connected (raced past timeout) on attempt %d", attempt);
+            return ESP_OK;
+        }
+
+        /* Genuinely no connection within the budget (manifests as SDP conn cnf
          * 0x4 / BTA_AV_OPEN status 2).  Tear down the half-open attempt and
          * retry — the sink's page scan is intermittent while it sits idle. */
-        ESP_LOGW(TAG, "A2DP attempt %d timed out (no page response) — retrying", attempt);
+        ESP_LOGW(TAG, "A2DP attempt %d timed out (no connection) — retrying", attempt);
         esp_a2d_source_disconnect(s_peer_bda);
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         vTaskDelay(pdMS_TO_TICKS(1500));
