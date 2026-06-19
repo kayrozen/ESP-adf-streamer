@@ -171,10 +171,11 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     }
     audio_pipeline_set_listener(s_pipeline, s_evt);
 
-    /* Initiate A2DP connection via bt_manager — pending guard prevents
-     * duplicate esp_a2d_source_connect() calls if a2dp_stream also
-     * triggers one when its element task starts. */
-    bt_manager_reconnect_a2dp();
+    /* NOTE: the A2DP connection is intentionally NOT initiated here.  a2dp_stream
+     * has now run esp_a2d_source_init (so the source profile is ready), but the
+     * actual page must happen while WiFi is idle — app_main calls
+     * bt_manager_connect_a2dp_blocking() before pipeline_start() so the BR/EDR
+     * page does not contend with the HTTP stream under BT/WiFi coexistence. */
 
     s_current_codec = PIPELINE_CODEC_MP3;
     ESP_LOGI(TAG, "Pipeline initialized");

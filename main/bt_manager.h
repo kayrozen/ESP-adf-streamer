@@ -36,8 +36,21 @@ bool bt_manager_is_a2dp_connected(void);
 void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
 
 /**
- * Retry esp_a2d_source_connect() to the configured peer BDA.
- * Safe to call while the pipeline is running; the BT stack ignores
- * duplicate connect requests when already connected.
+ * Fire a single esp_a2d_source_connect() to the configured peer BDA.
+ * Returns ESP_OK if the request was accepted (the link comes up asynchronously,
+ * observed via bt_manager_a2dp_state_cb).  Safe to call while connected — it
+ * skips the request and returns ESP_OK.  Use for runtime reconnect attempts.
+ * Requires a2dp_stream_init() (esp_a2d_source_init) to have run first.
  */
-esp_err_t bt_manager_reconnect_a2dp(void);
+esp_err_t bt_manager_connect_a2dp(void);
+
+/**
+ * Page the configured sink and BLOCK until A2DP is CONNECTED, retrying up to
+ * max_attempts times (each attempt waits out the BR/EDR page timeout).  Call
+ * this BEFORE starting the audio pipeline so the page happens while WiFi is
+ * idle — streaming concurrently with the page starves it under BT/WiFi
+ * coexistence and the page times out (SDP conn cnf 0x4).
+ * Requires a2dp_stream_init() (esp_a2d_source_init) to have run first.
+ * @return ESP_OK once connected, ESP_ERR_TIMEOUT if all attempts failed.
+ */
+esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts);

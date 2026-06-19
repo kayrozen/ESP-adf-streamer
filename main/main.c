@@ -134,10 +134,12 @@ static void run_event_loop(void)
                             ESP_LOGW(TAG, "No PCM for 20 s (A2DP connected) — restarting pipeline");
                             pipeline_change_station(TEST_STATIONS[s_current_station].url);
                         } else {
-                            /* A2DP not yet connected — a2dp_stream retries internally.
-                             * Calling esp_a2d_source_connect() here races with the
-                             * stream element's own retry and exhausts BT OSI timers. */
-                            ESP_LOGW(TAG, "No PCM for 20 s (A2DP disconnected) — awaiting BT reconnect");
+                            /* A2DP link is down — re-page the sink.  bt_manager
+                             * owns the connection lifecycle, so drive a single
+                             * connect attempt here (the pending guard dedups any
+                             * overlap with an in-flight attempt). */
+                            ESP_LOGW(TAG, "No PCM for 20 s (A2DP disconnected) — re-paging sink");
+                            bt_manager_connect_a2dp();
                         }
                     }
                 } else {
@@ -231,6 +233,18 @@ void app_main(void)
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));  /* uses discovered/configured BDA */
+
+    /* ---- Bring up A2DP BEFORE streaming ----
+     * pipeline_init() has initialized the A2DP source profile (via a2dp_stream).
+     * Page the speaker now, while WiFi is idle: doing the BR/EDR page
+     * concurrently with the HTTP stream starves it under BT/WiFi coexistence
+     * and the page times out (~5 s → SDP conn cnf 0x4 / BTA_AV_OPEN status 2).
+     * Retry across the sink's intermittent page scan. */
+    ret = bt_manager_connect_a2dp_blocking(10);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "A2DP not connected before streaming — starting anyway; "
+                      "stall detector will keep retrying the connection");
+    }
 
     /* ---- Phase C: Resource monitoring ---- */
     monitor_init();
