@@ -23,6 +23,17 @@ static void monitor_task(void *arg)
         stats_buf = malloc(STATS_BUF_SIZE);
     }
 
+    /* Emit one snapshot immediately. The OOM crashes in logs 16/18 fire within
+     * the first ~10s — before the first MONITOR_INTERVAL_S tick — so without an
+     * up-front print the streaming-phase DRAM floor is never captured. */
+    ESP_LOGI(TAG,
+             "HEAP@start  internal: %5u KB free  (min ever: %5u KB) | "
+             "PSRAM: %5u KB free  (min ever: %5u KB)",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+             (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM) / 1024));
+
     while (true) {
         /* Sleep for the interval, but wake immediately if notified by monitor_stop().
          * ulTaskNotifyTake returns > 0 when woken by a notification (stop signal). */
