@@ -128,6 +128,13 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 #
 # SND_BUF (send side) stays at 2880: we're a receiver (HTTP GET), so
 # outbound data is only TCP ACKs (~40B each); a smaller send buffer is fine.
+#
+# Pin MSS=1440 explicitly so the window stays exactly 4*MSS. The IDF v5.3.1
+# default already resolves to 1440 (confirmed by "tcp mss: 1440" in the logs),
+# but defining it here keeps the 4*MSS relationship robust if the default ever
+# drifts — otherwise a changed MSS would silently break the >=2*MSS fast-ACK
+# alignment this window size depends on.
+CONFIG_LWIP_TCP_MSS=1440
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
