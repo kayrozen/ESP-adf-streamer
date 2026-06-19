@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_coexist.h"
 #include "nvs_flash.h"
 #include "audio_event_iface.h"
 #include "audio_element.h"
@@ -217,6 +218,16 @@ void app_main(void)
 
     /* ---- Phase A.2: Bluetooth ---- */
     ESP_ERROR_CHECK(bt_manager_init(BT_DEVICE_NAME));
+
+    /* Bias BT/WiFi coexistence arbiter toward BT now that both radios are up.
+     * WiFi PS_MIN_MODEM + li=1 already yields the radio to BT between 102ms
+     * beacon wakes; this preference ensures BT wins contention during wakes too.
+     * Must be called after bt_manager_init() so the BT controller is registered
+     * with the coexistence framework before the preference takes effect. */
+    ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
+    }
 
     ret = bt_manager_find_peer(config_get_bt_mac(), 30);
     if (ret != ESP_OK) {
