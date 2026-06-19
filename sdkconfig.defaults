@@ -40,16 +40,29 @@ CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=n
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 
 # WiFi — reduced dynamic buffer caps to limit peak internal DRAM pressure.
-# Dynamic buffers are allocated on demand; the cap is what matters: 8 @ ~1.6KB
-# = 12.8KB peak vs 51.2KB with 32. Ample for 128kbps audio (~16KB/s).
+# Dynamic buffers are allocated on demand; the cap is what matters.
 # Static RX kept at 8 (proven in PR #6) — these are reserved, and dropping
 # below 8 risks losing management frames under BT/WiFi coexistence.
+# Dynamic TX cut to 4: we receive audio (HTTP), TX is only ACKs (~40 bytes).
+# 4 × 1.6KB = 6.4KB peak TX vs 12.8KB with 8 — frees 6.4KB for lwIP.
 CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=8
 CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
-CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=4
 CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
+
+# lwIP — halve per-socket TCP window/send buffer to cut peak pbuf usage.
+# MSS is 1440 here, so the default window is 4*MSS (5760). Drop to 2*MSS
+# (2880), NOT a sub-2*MSS value: a window < 2*MSS prevents lwIP's
+# "ACK every 2nd segment" fast path, forcing every ACK to wait for the
+# 200ms delayed-ACK timer — that caps throughput near 14KB/s and would
+# starve 128kbps audio (16KB/s). 2*MSS keeps the fast path while halving
+# the in-flight data the server can send before an ACK, reducing peak
+# PBUF_POOL allocation. 2880B ≈ 180ms @128kbps, well inside the 24KB
+# PSRAM jitter buffer (~1.5s).
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
 # Audio pipeline — allow element task stacks to be allocated in PSRAM.
 # Without this, BT+WiFi exhaust internal DRAM and audio thread creation fails.
