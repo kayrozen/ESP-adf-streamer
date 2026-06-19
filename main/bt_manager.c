@@ -182,6 +182,17 @@ void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *para
     case ESP_A2D_AUDIO_STATE_EVT:
         ESP_LOGI(TAG, "A2DP audio state: %d", param->audio_stat.state);
         break;
+    case ESP_A2D_AUDIO_CFG_EVT:
+        /* Log the negotiated SBC parameters so we can see the actual bitpool
+         * in use. High bitpool (e.g. 53) drives more SBC-encode work on Core 0
+         * (BTC_TASK), contributing to the CPU saturation seen in log 32. */
+        if (param->audio_cfg.mcc.type == ESP_A2D_MCT_SBC) {
+            uint8_t *p = param->audio_cfg.mcc.cie.sbc;
+            ESP_LOGI(TAG, "SBC codec cfg: freq_ch=0x%02x blk_sub_alloc=0x%02x "
+                     "min_bitpool=%u max_bitpool=%u",
+                     p[0], p[1], (unsigned)p[2], (unsigned)p[3]);
+        }
+        break;
     case ESP_A2D_PROF_STATE_EVT:
         ESP_LOGI(TAG, "A2DP profile state: %d", param->a2d_prof_stat.init_state);
         break;
