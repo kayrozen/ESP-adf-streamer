@@ -219,14 +219,23 @@ void app_main(void)
     /* ---- Phase A.2: Bluetooth ---- */
     ESP_ERROR_CHECK(bt_manager_init(BT_DEVICE_NAME));
 
-    /* Bias BT/WiFi coexistence arbiter toward BT now that both radios are up.
-     * WiFi PS_MIN_MODEM + li=1 already yields the radio to BT between 102ms
-     * beacon wakes; this preference ensures BT wins contention during wakes too.
+    /* BT/WiFi coexistence arbiter — BALANCE so each radio gets its share.
+     *
+     * History: PR #21 set PREFER_BT because BT A2DP was the bottleneck (WiFi
+     * had plenty of throughput and the concern was BT underrunning). Log 29
+     * (post PR #23) shows the opposite: BT L2CAP congestion is eliminated (0
+     * events vs 29 in log 27) but steady-state HTTP throughput is ~12.5 KB/s —
+     * only 80% of the 15.6 KB/s real-time rate needed for 128kbps MP3.
+     * PREFER_BT hands BT every contested radio slot, so WiFi can never sustain
+     * real-time even though BT is no longer congested. Switching to BALANCE
+     * gives WiFi ~50% of contested slots; the 256KB PCM ring buffer (=1.33s at
+     * 192 KB/s) absorbs any brief BT yielding without audible dropout.
+     *
      * Must be called after bt_manager_init() so the BT controller is registered
      * with the coexistence framework before the preference takes effect. */
-    ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
+    ret = esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
+        ESP_LOGW(TAG, "esp_coex_preference_set(BALANCE) failed: %d", ret);
     }
 
     ret = bt_manager_find_peer(config_get_bt_mac(), 30);
