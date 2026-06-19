@@ -11,7 +11,7 @@
 #include "aac_decoder.h"
 #include "esp_peripherals.h"  /* must precede a2dp_stream.h (defines esp_periph_handle_t) */
 #include "a2dp_stream.h"
-#include "esp_a2dp_api.h"
+#include "bt_manager.h"
 #include "passthrough_el.h"
 #include "pipeline.h"
 
@@ -167,11 +167,10 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
     }
     audio_pipeline_set_listener(s_pipeline, s_evt);
 
-    /* Connect A2DP to the peer speaker */
-    ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
-             s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
-             s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
-    esp_a2d_source_connect(s_peer_bda);
+    /* Initiate A2DP connection via bt_manager — pending guard prevents
+     * duplicate esp_a2d_source_connect() calls if a2dp_stream also
+     * triggers one when its element task starts. */
+    bt_manager_reconnect_a2dp();
 
     s_current_codec = PIPELINE_CODEC_MP3;
     ESP_LOGI(TAG, "Pipeline initialized");
