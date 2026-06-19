@@ -125,15 +125,15 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 
     switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
-        /* Any state transition means the pending connect resolved */
-        __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
         if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
             ESP_LOGI(TAG, "A2DP connected");
             s_a2dp_connected = true;
             if (s_bt_event_group) {
                 xEventGroupSetBits(s_bt_event_group, A2DP_CONN_BIT);
             }
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+            __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
             ESP_LOGW(TAG, "A2DP disconnected");
             s_a2dp_connected = false;
             if (s_bt_event_group) {
@@ -257,6 +257,10 @@ esp_err_t bt_manager_reconnect_a2dp(void)
     if (memcmp(s_peer_bda, zero_bda, 6) == 0) {
         ESP_LOGW(TAG, "reconnect_a2dp: no peer BDA configured");
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_a2dp_connected) {
+        ESP_LOGD(TAG, "A2DP already connected — skipping reconnect");
+        return ESP_OK;
     }
     if (__atomic_exchange_n(&s_a2dp_connect_pending, true, __ATOMIC_SEQ_CST)) {
         ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
