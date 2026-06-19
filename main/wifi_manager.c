@@ -5,7 +5,6 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
-#include "esp_coexist.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "wifi_mgr";
@@ -170,15 +169,6 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
                                            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to %s", ssid);
-        /* Bias the BT/WiFi coexistence arbiter toward BT so A2DP audio gets
-         * priority over WiFi during radio contention. HTTP only needs 16 KB/s
-         * (128kbps MP3); even a brief WiFi stall is absorbed by PSRAM jitter
-         * buffers. BT underruns (heard as clicks/dropouts) cannot be buffered
-         * away and must be prevented at the arbiter level. */
-        ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
-        }
         return ESP_OK;
     }
     ESP_LOGE(TAG, "WiFi connect timeout (%d ms)", WIFI_CONNECT_TIMEOUT_MS);
