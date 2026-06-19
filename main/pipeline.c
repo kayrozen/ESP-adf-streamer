@@ -44,6 +44,20 @@ static audio_element_handle_t create_http_stream(void)
     cfg.enable_playlist_parser = true;   /* HLS playlist support */
     cfg.task_stack        = 6 * 1024;   /* TLS handshake (HTTPS AAC/HLS stations) runs on this task — do not shrink */
     cfg.task_prio         = 23;
+    /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
+     *
+     * Log 32 CPU table: Core 0 runs at 92% busy (IDLE0 = 8%). The load
+     * breakdown is BTC_TASK 20% + btController 13% + WiFi 13% + BTU_TASK 9%
+     * + hciT 3% = 58% for BT/WiFi, plus http 18% competing on the same core.
+     * Core 1 runs at 37% busy (dec 34%, IDLE1 63%), so it has ample headroom.
+     *
+     * Pinning http to Core 1 moves ~18% off Core 0. That headroom goes to
+     * BTC_TASK / btController, which need it to encode SBC frames on time —
+     * the root cause of the L2CAP is_cong bursts that throttle throughput
+     * below real-time. http and dec share Core 1 in natural turn: http writes
+     * to the ring buffer, dec drains it, so they mostly alternate rather than
+     * compete. */
+    cfg.task_core         = 1;
     /* Compressed-side jitter buffer. 64KB ≈ 4s of 128kbps MP3. Lives in PSRAM
      * (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), so it costs no internal
      * DRAM — and moving it out of internal actually frees the old 4KB. Lets the
