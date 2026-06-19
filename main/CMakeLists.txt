@@ -11,7 +11,6 @@ set(COMPONENT_SRCS
     "bt_manager.c"
     "pipeline.c"
     "monitor.c"
-    "passthrough_el.c"
     "config_manager.c"
     "provisioning.c"
 )

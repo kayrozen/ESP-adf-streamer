@@ -39,11 +39,15 @@ CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=n
 # Controller memory for Classic BT
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 
-# WiFi
+# WiFi — reduced dynamic buffer caps to limit peak internal DRAM pressure.
+# Dynamic buffers are allocated on demand; the cap is what matters: 8 @ ~1.6KB
+# = 12.8KB peak vs 51.2KB with 32. Ample for 128kbps audio (~16KB/s).
+# Static RX kept at 8 (proven in PR #6) — these are reserved, and dropping
+# below 8 risks losing management frames under BT/WiFi coexistence.
 CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=8
-CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
-CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=8
 CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
 

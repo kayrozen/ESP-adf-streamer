@@ -14,7 +14,6 @@
 #include "bt_manager.h"
 #include "pipeline.h"
 #include "monitor.h"
-#include "passthrough_el.h"
 #include "station_config.h"
 #include "config_manager.h"
 #include "provisioning.h"
@@ -74,11 +73,6 @@ static void do_switch_to_station(int idx)
         s_current_station = idx;
     }
     ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", (esp_timer_get_time() - t0) / 1000);
-
-    passthrough_stats_t stats;
-    passthrough_el_get_stats(pipeline_get_passthrough_el(), &stats);
-    ESP_LOGI(TAG, "Phase D passthrough: bytes=%" PRIu64 "  frames=%" PRIu32,
-             stats.bytes_passed, stats.frames_passed);
 }
 #endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
 
@@ -115,15 +109,19 @@ static void run_event_loop(void)
         }
 #endif
 
-        /* A2DP stall detection — retry if no PCM bytes flow for 20 s */
+        /* A2DP stall detection — retry if no PCM is produced for 20 s.
+         * Track the decoder element's byte_pos: it advances as PCM is produced
+         * and freezes on both a network stall (input starvation) and an A2DP
+         * stall (downstream ring-buffer backpressure). */
         {
-            audio_element_handle_t pass_el = pipeline_get_passthrough_el();
-            if (pass_el != NULL) {
-                if (audio_element_get_state(pass_el) == AEL_STATE_RUNNING) {
-                    passthrough_stats_t ps = {0};
-                    passthrough_el_get_stats(pass_el, &ps);
-                    if (ps.bytes_passed != stall_last_bytes) {
-                        stall_last_bytes = ps.bytes_passed;
+            audio_element_handle_t dec_el = pipeline_get_decoder_el();
+            if (dec_el != NULL) {
+                if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
+                    audio_element_info_t ai = {0};
+                    audio_element_getinfo(dec_el, &ai);
+                    uint64_t cur_bytes = (uint64_t)ai.byte_pos;
+                    if (cur_bytes != stall_last_bytes) {
+                        stall_last_bytes = cur_bytes;
                         stall_since_us   = esp_timer_get_time();
                     } else if ((esp_timer_get_time() - stall_since_us) > 20LL * 1000000) {
                         stall_since_us   = esp_timer_get_time();
