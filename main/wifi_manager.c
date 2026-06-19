@@ -135,6 +135,17 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         return ret;
     }
 
+    /* Disable modem sleep so ACKs exit in the next BT coexistence slot
+     * (~10ms) rather than the next beacon wake-up (li=3 → 307ms default).
+     * With PS_MIN_MODEM the TCP ACK rate is limited to one per 307ms,
+     * capping throughput at 2×MSS/307ms ≈ 9KB/s regardless of window size
+     * (log 22 measured exactly 9.4KB/s). WIFI_PS_NONE is the IDF-documented
+     * way to improve WiFi throughput under BT/WiFi coexistence. */
+    ret = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_ps(NONE) failed: %d (modem sleep stays on)", ret);
+    }
+
     ESP_LOGI(TAG, "Connecting to SSID: %s …", ssid);
     /* Clear stale bits from any previous connect attempt before waiting. */
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
