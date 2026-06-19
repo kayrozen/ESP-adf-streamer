@@ -8,11 +8,11 @@
  * pipeline.h — Audio pipeline management
  *
  * Pipeline topology:
- *   http_stream → [mp3|aac]_decoder → passthrough_el → a2dp_stream
+ *   http_stream → [mp3|aac]_decoder → a2dp_stream
  *
  * http_stream handles both plain HTTP/Icecast and HLS (.m3u8) transparently.
- * The passthrough_el is the Phase D custom element (byte counter).
  * a2dp_stream writes PCM to the Bluetooth A2DP source stack.
+ * The decoder's ring buffer (24KB, PSRAM) acts as the A2DP jitter cushion.
  */
 
 typedef enum {
@@ -57,6 +57,6 @@ void pipeline_deinit(void);
 audio_event_iface_handle_t pipeline_get_event_iface(void);
 
 /**
- * Get the passthrough element handle (for Phase D stats).
+ * Get the a2dp stream element handle (for stall detection via audio_element_getinfo).
  */
-audio_element_handle_t pipeline_get_passthrough_el(void);
+audio_element_handle_t pipeline_get_bt_el(void);
