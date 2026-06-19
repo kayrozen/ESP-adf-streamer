@@ -17,8 +17,8 @@ static const char *TAG = "bt_mgr";
 
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
-static bool s_a2dp_connected = false;
-static bool s_a2dp_connect_pending = false;
+static uint32_t s_a2dp_connected = 0;
+static uint32_t s_a2dp_connect_pending = 0;
 
 /* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
 
@@ -127,18 +127,18 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     case ESP_A2D_CONNECTION_STATE_EVT:
         if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTING) {
             ESP_LOGI(TAG, "A2DP connecting");
-            __atomic_store_n(&s_a2dp_connect_pending, true, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST);
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             ESP_LOGI(TAG, "A2DP connected");
-            __atomic_store_n(&s_a2dp_connected, true, __ATOMIC_SEQ_CST);
-            __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s_a2dp_connected, 1u, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             if (s_bt_event_group) {
                 xEventGroupSetBits(s_bt_event_group, A2DP_CONN_BIT);
             }
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
             ESP_LOGW(TAG, "A2DP disconnected");
-            __atomic_store_n(&s_a2dp_connected, false, __ATOMIC_SEQ_CST);
-            __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s_a2dp_connected, 0u, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             if (s_bt_event_group) {
                 xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
             }
@@ -261,12 +261,17 @@ esp_err_t bt_manager_reconnect_a2dp(void)
         ESP_LOGW(TAG, "reconnect_a2dp: no peer BDA configured");
         return ESP_ERR_INVALID_STATE;
     }
-    if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
-        ESP_LOGD(TAG, "A2DP already connected — skipping reconnect");
+    /* Acquire the pending lock first; then double-check connected under the lock.
+     * This closes the window where a CONNECTED callback fires between the
+     * connected check and the exchange, which would leave pending=1 and trigger
+     * a duplicate esp_a2d_source_connect() on an already-live link. */
+    if (__atomic_exchange_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST)) {
+        ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
         return ESP_OK;
     }
-    if (__atomic_exchange_n(&s_a2dp_connect_pending, true, __ATOMIC_SEQ_CST)) {
-        ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
+    if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
+        ESP_LOGD(TAG, "A2DP already connected — skipping reconnect");
+        __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
@@ -274,7 +279,7 @@ esp_err_t bt_manager_reconnect_a2dp(void)
              s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
     esp_err_t err = esp_a2d_source_connect(s_peer_bda);
     if (err != ESP_OK) {
-        __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
     }
     return err;
 }
