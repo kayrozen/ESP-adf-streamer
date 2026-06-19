@@ -22,7 +22,7 @@ static uint32_t s_a2dp_connect_pending = 0;
 /* Set while bt_manager_find_peer() is actively scanning so the GAP callback
  * knows not to interfere with Bluedroid's internal discovery (e.g. SDP lookup
  * triggered by esp_a2d_source_connect() retries). */
-static bool s_find_peer_active = false;
+static uint32_t s_find_peer_active = 0;
 
 /* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
 
@@ -73,14 +73,14 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                     for (int j = 0; j + 1 < rlen; j += 2) {
                         uint16_t u = uuids[j] | (uuids[j + 1] << 8);
                         if (u == 0x110B) {
-                            memcpy(s_peer_bda, bda, 6);
-                            /* Only cancel discovery and signal when WE started
-                             * the scan via bt_manager_find_peer().  During
-                             * a2dp_stream reconnect retries, Bluedroid runs its
-                             * own internal inquiry; cancelling it here aborts
-                             * the connect procedure and leaves the link dead. */
-                            if (s_find_peer_active) {
+                            /* Only act when WE started the scan via bt_manager_find_peer().
+                             * During a2dp_stream reconnect retries Bluedroid runs its own
+                             * internal inquiry; overwriting s_peer_bda with a different
+                             * nearby sink or cancelling the scan would corrupt the target
+                             * address or abort the connect procedure. */
+                            if (__atomic_load_n(&s_find_peer_active, __ATOMIC_SEQ_CST)) {
                                 ESP_LOGI(TAG, "A2DP Sink found: %s", bda_str);
+                                memcpy(s_peer_bda, bda, 6);
                                 esp_bt_gap_cancel_discovery();
                                 if (s_bt_event_group) {
                                     xEventGroupSetBits(s_bt_event_group, BT_FOUND_BIT);
@@ -246,7 +246,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
     if (discovery_duration_units == 0) discovery_duration_units = 1;
     ESP_LOGI(TAG, "Scanning for A2DP sinks (%d s, %d units)...", discovery_duration_s, discovery_duration_units);
     xEventGroupClearBits(s_bt_event_group, BT_FOUND_BIT);
-    s_find_peer_active = true;
+    __atomic_store_n(&s_find_peer_active, 1u, __ATOMIC_SEQ_CST);
     ESP_ERROR_CHECK(esp_bt_gap_start_discovery(
         ESP_BT_INQ_MODE_GENERAL_INQUIRY,
         discovery_duration_units,
@@ -255,7 +255,7 @@ esp_err_t bt_manager_find_peer(const uint8_t peer_bda[6], uint32_t timeout_s)
     EventBits_t bits = xEventGroupWaitBits(s_bt_event_group,
                                            BT_FOUND_BIT, pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(discovery_duration_s * 1000));
-    s_find_peer_active = false;
+    __atomic_store_n(&s_find_peer_active, 0u, __ATOMIC_SEQ_CST);
     if (!(bits & BT_FOUND_BIT)) {
         ESP_LOGE(TAG, "No A2DP sink found within %d s", discovery_duration_s);
         esp_bt_gap_cancel_discovery();
