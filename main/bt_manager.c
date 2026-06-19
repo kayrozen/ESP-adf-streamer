@@ -215,8 +215,12 @@ esp_err_t bt_manager_init(const char *device_name)
 
     esp_bt_gap_set_device_name(device_name);
 
-    /* Make discoverable + connectable */
-    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    /* A2DP SOURCE should initiate connections, not advertise itself.  Staying
+     * GENERAL_DISCOVERABLE invites the speaker (and other devices) to inquire
+     * and initiate, which can flip us into the slave role and contend with our
+     * own outgoing connect.  Remain CONNECTABLE so the sink can re-establish
+     * AVRC/A2DP after we connect, but NON_DISCOVERABLE so nothing inquires us. */
+    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
 
     ESP_LOGI(TAG, "BT initialized as \"%s\"", device_name);
     return ESP_OK;
@@ -290,6 +294,14 @@ esp_err_t bt_manager_reconnect_a2dp(void)
         __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
         return ESP_OK;
     }
+    /* Clear any stale bond for this peer before connecting.  A speaker that
+     * still holds an old link key for our MAC rejects the SDP/L2CAP channel
+     * with L2CAP_CONN_NO_RESOURCES (BT_SDP error 0x4 / BTA_AV_OPEN status 2),
+     * which presents as "connect fails, no audio" even though the sink is idle
+     * and discoverable.  Removing the bond forces a fresh Just-Works pairing on
+     * both ends.  Harmless if no bond exists (returns ESP_FAIL, ignored). */
+    esp_bt_gap_remove_bond_device(s_peer_bda);
+
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
              s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
              s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
