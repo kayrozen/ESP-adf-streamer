@@ -15,6 +15,11 @@ static const char *TAG = "bt_mgr";
 
 #define BT_FOUND_BIT      BIT0
 #define A2DP_CONN_BIT     BIT1
+/* Set when a connect attempt fails its open/page (BTA_AV_OPEN status 2),
+ * surfaced as a DISCONNECTED event while a connect is still pending.  Lets the
+ * blocking connector retry the instant the stack reports failure instead of
+ * waiting out the rest of its (deliberately generous) per-attempt timeout. */
+#define A2DP_FAIL_BIT     BIT2
 
 /* Per-attempt budget for a full A2DP source connection: the BR/EDR page alone
  * can take ~5.12 s (8192 slots * 0.625 ms), and SDP + AVDTP signalling follow.
@@ -156,6 +161,11 @@ void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *para
         case ESP_A2D_CONNECTION_STATE_CONNECTING:
             ESP_LOGI(TAG, "A2DP connecting");
             __atomic_store_n(&s_a2dp_connect_pending, 1u, __ATOMIC_SEQ_CST);
+            /* Fresh attempt under way — drop any failure flag left by a prior
+             * attempt so the connector's wait can't trip on a stale signal. */
+            if (s_bt_event_group) {
+                xEventGroupClearBits(s_bt_event_group, A2DP_FAIL_BIT);
+            }
             break;
         case ESP_A2D_CONNECTION_STATE_CONNECTED:
             ESP_LOGI(TAG, "A2DP connected");
@@ -169,29 +179,27 @@ void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *para
             ESP_LOGI(TAG, "A2DP disconnecting");
             break;
         case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
-        default:
+        default: {
+            /* A DISCONNECTED arriving while a connect is still pending means the
+             * open/page failed (BTA_AV_OPEN status 2), not a normal teardown.
+             * Distinguish the two so the blocking connector can retry at once on
+             * a failed open but ignore steady-state disconnects. */
+            uint32_t was_pending =
+                __atomic_exchange_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             ESP_LOGW(TAG, "A2DP disconnected");
             __atomic_store_n(&s_a2dp_connected, 0u, __ATOMIC_SEQ_CST);
-            __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
             if (s_bt_event_group) {
                 xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
+                if (was_pending) {
+                    xEventGroupSetBits(s_bt_event_group, A2DP_FAIL_BIT);
+                }
             }
             break;
+        }
         }
         break;
     case ESP_A2D_AUDIO_STATE_EVT:
         ESP_LOGI(TAG, "A2DP audio state: %d", param->audio_stat.state);
-        break;
-    case ESP_A2D_AUDIO_CFG_EVT:
-        /* Log the negotiated SBC parameters so we can see the actual bitpool
-         * in use. High bitpool (e.g. 53) drives more SBC-encode work on Core 0
-         * (BTC_TASK), contributing to the CPU saturation seen in log 32. */
-        if (param->audio_cfg.mcc.type == ESP_A2D_MCT_SBC) {
-            uint8_t *p = param->audio_cfg.mcc.cie.sbc;
-            ESP_LOGI(TAG, "SBC codec cfg: freq_ch=0x%02x blk_sub_alloc=0x%02x "
-                     "min_bitpool=%u max_bitpool=%u",
-                     p[0], p[1], (unsigned)p[2], (unsigned)p[3]);
-        }
         break;
     case ESP_A2D_PROF_STATE_EVT:
         ESP_LOGI(TAG, "A2DP profile state: %d", param->a2d_prof_stat.init_state);
@@ -358,7 +366,7 @@ esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
         }
 
         ESP_LOGI(TAG, "A2DP connect attempt %d/%d", attempt, max_attempts);
-        xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT);
+        xEventGroupClearBits(s_bt_event_group, A2DP_CONN_BIT | A2DP_FAIL_BIT);
 
         esp_err_t err = bt_manager_connect_a2dp();
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -367,7 +375,13 @@ esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
             continue;
         }
 
-        EventBits_t bits = xEventGroupWaitBits(s_bt_event_group, A2DP_CONN_BIT,
+        /* Wake on either outcome: CONNECTED (success) or an explicit open
+         * failure (FAIL).  The timeout is the backstop for a page that is still
+         * silently in flight — log 33's successful page took ~6.5 s, so the
+         * budget must stay generous; we just no longer sit on it after the stack
+         * has already told us the open failed. */
+        EventBits_t bits = xEventGroupWaitBits(s_bt_event_group,
+                                               A2DP_CONN_BIT | A2DP_FAIL_BIT,
                                                pdFALSE, pdFALSE,
                                                pdMS_TO_TICKS(A2DP_CONNECT_TIMEOUT_MS));
         if (bits & A2DP_CONN_BIT) {
@@ -375,22 +389,44 @@ esp_err_t bt_manager_connect_a2dp_blocking(int max_attempts)
             return ESP_OK;
         }
 
-        /* Wait expired without CONNECTED.  Re-check the flag before tearing
-         * anything down: a CONNECTED callback can race in just after
-         * xEventGroupWaitBits returns on timeout, and we must not disconnect a
-         * link that just came up. */
+        /* Re-check the flag before tearing anything down: a CONNECTED callback
+         * can race in just after xEventGroupWaitBits returns, and we must not
+         * disconnect a link that just came up. */
         if (__atomic_load_n(&s_a2dp_connected, __ATOMIC_SEQ_CST)) {
-            ESP_LOGI(TAG, "A2DP connected (raced past timeout) on attempt %d", attempt);
+            ESP_LOGI(TAG, "A2DP connected (raced past wait) on attempt %d", attempt);
             return ESP_OK;
         }
 
-        /* Genuinely no connection within the budget (manifests as SDP conn cnf
-         * 0x4 / BTA_AV_OPEN status 2).  Tear down the half-open attempt and
-         * retry — the sink's page scan is intermittent while it sits idle. */
-        ESP_LOGW(TAG, "A2DP attempt %d timed out (no connection) — retrying", attempt);
+        /* Either the stack reported the open failed (FAIL bit, ~5 s page timeout
+         * → SDP conn cnf 0x4 / BTA_AV_OPEN status 2) or our own budget expired.
+         * Both mean no link; the sink's page scan is intermittent while it sits
+         * idle.  Tear down the half-open attempt and retry.  On an explicit
+         * failure, retry promptly while the sink is still warm from the page;
+         * on a bare timeout, back off a little longer. */
+        if (bits & A2DP_FAIL_BIT) {
+            ESP_LOGW(TAG, "A2DP attempt %d open failed — re-paging now", attempt);
+        } else {
+            ESP_LOGW(TAG, "A2DP attempt %d timed out (no connection) — retrying", attempt);
+        }
         esp_a2d_source_disconnect(s_peer_bda);
-        __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
-        vTaskDelay(pdMS_TO_TICKS(1500));
+        if (!(bits & A2DP_FAIL_BIT)) {
+            /* On timeout the page may still be in flight.  Leave
+             * s_a2dp_connect_pending=1 and wait for the DISCONNECTED event;
+             * its callback will atomically clear the flag and set FAIL_BIT.
+             * Without this wait, a delayed DISCONNECTED races the next
+             * CONNECTING event, sees pending=1, and spuriously aborts it. */
+            EventBits_t disc = xEventGroupWaitBits(s_bt_event_group, A2DP_FAIL_BIT,
+                                                   pdTRUE, pdFALSE,
+                                                   pdMS_TO_TICKS(1000));
+            if (!(disc & A2DP_FAIL_BIT)) {
+                /* DISCONNECTED never arrived — force-clear the flag. */
+                __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+            }
+        } else {
+            /* DISCONNECTED callback already cleared s_a2dp_connect_pending. */
+            __atomic_store_n(&s_a2dp_connect_pending, 0u, __ATOMIC_SEQ_CST);
+        }
+        vTaskDelay(pdMS_TO_TICKS((bits & A2DP_FAIL_BIT) ? 800 : 1500));
     }
 
     ESP_LOGE(TAG, "A2DP not connected after %d attempts", max_attempts);
