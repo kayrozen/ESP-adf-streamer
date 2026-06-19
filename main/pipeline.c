@@ -44,7 +44,12 @@ static audio_element_handle_t create_http_stream(void)
     cfg.enable_playlist_parser = true;   /* HLS playlist support */
     cfg.task_stack        = 6 * 1024;   /* TLS handshake (HTTPS AAC/HLS stations) runs on this task — do not shrink */
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = 4 * 1024;   /* halve default to save internal DRAM */
+    /* Compressed-side jitter buffer. 64KB ≈ 4s of 128kbps MP3. Lives in PSRAM
+     * (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), so it costs no internal
+     * DRAM — and moving it out of internal actually frees the old 4KB. Lets the
+     * decoder burst-refill from the socket backlog faster than real-time after
+     * a BT/WiFi coexistence stall, instead of starving on a 4KB input. */
+    cfg.out_rb_size       = 64 * 1024;
     return http_stream_init(&cfg);
 }
 
@@ -53,7 +58,14 @@ static audio_element_handle_t create_mp3_decoder(void)
     mp3_decoder_cfg_t cfg = DEFAULT_MP3_DECODER_CONFIG();
     cfg.task_core         = 0;
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = 24 * 1024;  /* direct to a2dp_stream; 24KB in PSRAM absorbs BT jitter (~138ms at 44.1kHz stereo) */
+    /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
+     * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
+     * while the decoder refills it in bursts. The old 24KB held only ~125ms at
+     * 48kHz/stereo/16-bit (192KB/s) — far shorter than the 200-500ms coexistence
+     * stalls that caused log 21-23 choppiness. 256KB ≈ 1.36s of headroom. PSRAM
+     * has ~4MB free, so this costs no internal DRAM. (Adds ~1.3s startup latency,
+     * irrelevant for internet radio.) */
+    cfg.out_rb_size       = 256 * 1024;
     return mp3_decoder_init(&cfg);
 }
 
@@ -62,7 +74,14 @@ static audio_element_handle_t create_aac_decoder(void)
     aac_decoder_cfg_t cfg = DEFAULT_AAC_DECODER_CONFIG();
     cfg.task_core         = 0;
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = 24 * 1024;  /* direct to a2dp_stream; 24KB in PSRAM absorbs BT jitter (~138ms at 44.1kHz stereo) */
+    /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
+     * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
+     * while the decoder refills it in bursts. The old 24KB held only ~125ms at
+     * 48kHz/stereo/16-bit (192KB/s) — far shorter than the 200-500ms coexistence
+     * stalls that caused log 21-23 choppiness. 256KB ≈ 1.36s of headroom. PSRAM
+     * has ~4MB free, so this costs no internal DRAM. (Adds ~1.3s startup latency,
+     * irrelevant for internet radio.) */
+    cfg.out_rb_size       = 256 * 1024;
     return aac_decoder_init(&cfg);
 }
 
