@@ -7,7 +7,6 @@
 #include "esp_bt_device.h"
 #include "esp_gap_bt_api.h"
 #include "esp_a2dp_api.h"
-#include "esp_avrc_api.h"
 #include "bt_manager.h"
 
 static const char *TAG = "bt_mgr";
@@ -23,14 +22,6 @@ static uint32_t s_a2dp_connect_pending = 0;
  * knows not to interfere with Bluedroid's internal discovery (e.g. SDP lookup
  * triggered by esp_a2d_source_connect() retries). */
 static uint32_t s_find_peer_active = 0;
-
-/* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
-
-static void avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param)
-{
-    (void)event;
-    (void)param;
-}
 
 /* ---- GAP callback ---- */
 
@@ -128,9 +119,12 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
     }
 }
 
-/* ---- A2DP callback ---- */
-
-static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
+/* ---- A2DP connection-state observer ----
+ * The ADF a2dp_stream element owns the esp_a2d callback (it registers its own
+ * in a2dp_stream_init and re-inits AVRC).  We are invoked as a2dp_stream's
+ * user_a2d_cb so bt_manager can still track connection state for the stall
+ * detector and bt_manager_is_a2dp_connected(). */
+void bt_manager_a2dp_state_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
     if (!param) {
         ESP_LOGW(TAG, "A2DP callback with NULL param");
@@ -205,13 +199,13 @@ esp_err_t bt_manager_init(const char *device_name)
     esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
     esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin);
 
-    /* AVRC must be initialized before A2DP — many speakers check for AVRC
-     * in our SDP record and refuse the A2DP connection if it's missing. */
-    ESP_ERROR_CHECK(esp_avrc_ct_init());
-    ESP_ERROR_CHECK(esp_avrc_ct_register_callback(avrc_ct_callback));
-
-    ESP_ERROR_CHECK(esp_a2d_register_callback(a2dp_callback));
-    ESP_ERROR_CHECK(esp_a2d_source_init());
+    /* NOTE: A2DP source init, the esp_a2d callback, and AVRC init are owned by
+     * the ADF a2dp_stream element (a2dp_stream_init does all three).  We must
+     * NOT register them here — doing so previously got silently overridden when
+     * a2dp_stream_init ran later, so our callback never fired and AVRC was
+     * double-initialized ("btc_avrc_ct_init already initialized").  bt_manager
+     * observes connection state via bt_manager_a2dp_state_cb, which pipeline.c
+     * passes as a2dp_stream's user_a2d_cb. */
 
     esp_bt_gap_set_device_name(device_name);
 
