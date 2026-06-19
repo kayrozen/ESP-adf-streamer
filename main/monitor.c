@@ -9,9 +9,6 @@
 
 static const char *TAG = "monitor";
 
-/* Max tasks to enumerate for the per-task CPU table. */
-#define STATS_MAX_TASKS 32
-
 static TaskHandle_t s_monitor_task = NULL;
 static volatile bool s_running     = false;
 static SemaphoreHandle_t s_monitor_mutex = NULL;
@@ -26,38 +23,48 @@ static SemaphoreHandle_t s_monitor_mutex = NULL;
  * controller + Bluedroid SBC encode + coex) is the saturated resource that
  * caps the decode+encode chain below real-time.
  *
- * 'tasks' is a caller-owned PSRAM buffer of STATS_MAX_TASKS entries. */
-static void log_cpu_stats(TaskStatus_t *tasks)
+ * The buffer is sized from the live task count (+headroom) and allocated in
+ * PSRAM per call: a fixed cap risks uxTaskGetSystemState() returning 0 when
+ * WiFi+Bluedroid+ADF push the task count past it, which would silently blank
+ * the table — the exact failure this function exists to avoid. */
+static void log_cpu_stats(void)
 {
+    UBaseType_t array_size = uxTaskGetNumberOfTasks() + 8;  /* headroom for races */
+    TaskStatus_t *tasks = heap_caps_malloc(array_size * sizeof(TaskStatus_t),
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tasks) {
+        tasks = malloc(array_size * sizeof(TaskStatus_t));
+    }
+    if (!tasks) {
+        ESP_LOGW(TAG, "CPU stats unavailable (alloc failed)");
+        return;
+    }
+
     uint32_t total_runtime = 0;
-    UBaseType_t n = uxTaskGetSystemState(tasks, STATS_MAX_TASKS, &total_runtime);
+    UBaseType_t n = uxTaskGetSystemState(tasks, array_size, &total_runtime);
     if (n == 0 || total_runtime == 0) {
         ESP_LOGW(TAG, "CPU stats unavailable (n=%u, total=%u)",
                  (unsigned)n, (unsigned)total_runtime);
+        free(tasks);
         return;
     }
-    /* Divide by 100 up front so counter/(total/100) yields percent. */
-    uint32_t total_pct = total_runtime / 100;
-    if (total_pct == 0) total_pct = 1;
 
     ESP_LOGI(TAG, "CPU per task (IDLE0/IDLE1 = per-core idle headroom):");
     for (UBaseType_t i = 0; i < n; i++) {
-        uint32_t pct = tasks[i].ulRunTimeCounter / total_pct;
+        /* 64-bit multiply-first keeps full precision and cannot overflow:
+         * ulRunTimeCounter is cumulative-since-boot, so ×100 exceeds 32 bits
+         * within ~43s on a busy core. */
+        uint32_t pct = (uint32_t)(((uint64_t)tasks[i].ulRunTimeCounter * 100) / total_runtime);
         ESP_LOGI(TAG, "  %-16s %2u%%  (prio %2u, stk_hwm %5u)",
                  tasks[i].pcTaskName, (unsigned)pct,
                  (unsigned)tasks[i].uxCurrentPriority,
                  (unsigned)tasks[i].usStackHighWaterMark);
     }
+    free(tasks);
 }
 
 static void monitor_task(void *arg)
 {
-    TaskStatus_t *tasks = heap_caps_malloc(STATS_MAX_TASKS * sizeof(TaskStatus_t),
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!tasks) {
-        tasks = malloc(STATS_MAX_TASKS * sizeof(TaskStatus_t));
-    }
-
     /* Emit one snapshot immediately. The OOM crashes in logs 16/18 fire within
      * the first ~10s — before the first MONITOR_INTERVAL_S tick — so without an
      * up-front print the streaming-phase DRAM floor is never captured. */
@@ -88,12 +95,9 @@ static void monitor_task(void *arg)
                  (unsigned)(free_internal / 1024), (unsigned)(min_internal / 1024),
                  (unsigned)(free_spiram   / 1024), (unsigned)(min_spiram   / 1024));
 
-        if (tasks) {
-            log_cpu_stats(tasks);
-        }
+        log_cpu_stats();
     }
 
-    if (tasks) free(tasks);
     /* Clear handle inside the task so monitor_start() can't race with a
      * still-running task after monitor_stop() returns. */
     xSemaphoreTake(s_monitor_mutex, portMAX_DELAY);
