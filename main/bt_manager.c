@@ -18,7 +18,7 @@ static const char *TAG = "bt_mgr";
 static EventGroupHandle_t s_bt_event_group;
 static uint8_t  s_peer_bda[6] = {0};
 static bool     s_a2dp_connected = false;
-static bool     s_a2dp_connect_pending = false;
+static volatile bool s_a2dp_connect_pending = false;
 
 /* ---- AVRC controller callback (stub — we don't need remote-control events) ---- */
 
@@ -126,7 +126,7 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
         /* Any state transition means the pending connect resolved */
-        s_a2dp_connect_pending = false;
+        __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
         if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
             ESP_LOGI(TAG, "A2DP connected");
             s_a2dp_connected = true;
@@ -258,15 +258,18 @@ esp_err_t bt_manager_reconnect_a2dp(void)
         ESP_LOGW(TAG, "reconnect_a2dp: no peer BDA configured");
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_a2dp_connect_pending) {
+    if (__atomic_exchange_n(&s_a2dp_connect_pending, true, __ATOMIC_SEQ_CST)) {
         ESP_LOGD(TAG, "A2DP connect already pending — skipping duplicate");
         return ESP_OK;
     }
-    s_a2dp_connect_pending = true;
     ESP_LOGI(TAG, "Connecting A2DP to %02X:%02X:%02X:%02X:%02X:%02X",
              s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
              s_peer_bda[3], s_peer_bda[4], s_peer_bda[5]);
-    return esp_a2d_source_connect(s_peer_bda);
+    esp_err_t err = esp_a2d_source_connect(s_peer_bda);
+    if (err != ESP_OK) {
+        __atomic_store_n(&s_a2dp_connect_pending, false, __ATOMIC_SEQ_CST);
+    }
+    return err;
 }
 
 bool bt_manager_is_a2dp_connected(void)
