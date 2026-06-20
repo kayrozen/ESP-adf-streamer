@@ -84,14 +84,19 @@ static audio_element_handle_t create_http_stream(void)
      * the two can't drift.  8 KB covers mbedTLS TLS 1.2 RSA call frames (ASN.1 parse + key
      * exchange); TLS I/O buffers live in PSRAM via MBEDTLS_EXTERNAL_MEM_ALLOC=y, so only call
      * frames land on this stack, and CANARY catches any genuine overflow. */
-    /* Move THIS stack to PSRAM.  The http task is I/O-bound (it blocks on the
-     * socket and mbedTLS), so a 40 MHz cache-backed PSRAM stack costs negligible
-     * throughput, while freeing 8 KB of scarce internal DRAM — the fix for the
-     * "wifi:m f null" + NULL-queue-assert exhaustion in log 61.  Requires
-     * SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y plus ADF's idf_v5.2_freertos.patch (applied
-     * in CI).  stack_in_ext already defaults true in HTTP_STREAM_CFG_DEFAULT(); set
-     * explicitly so the intent is local and survives a macro change. */
-    cfg.stack_in_ext      = true;
+    /* Keep http stack in INTERNAL DRAM.
+     * Log 62: moving this stack to PSRAM (stack_in_ext=true, PR #42) caused a
+     * deterministic vQueueDelete(NULL) assert at the first TLS handshake completion
+     * (ESP_HTTP_CLIENT_EVENT:1/:2), crashing all three boot attempts identically.
+     * ESP32 mbedTLS uses hardware SHA/MPI accelerators that write results back to
+     * memory; with the task stack in PSRAM (cache-backed at 40 MHz) the hardware
+     * context is not in internal DRAM as the crypto block expects, and the state
+     * machine asserts.  TLS I/O *buffers* are safely in PSRAM via
+     * MBEDTLS_EXTERNAL_MEM_ALLOC=y (heap-allocated, not stack-resident); only the
+     * call-frame stack itself must stay internal.
+     * Internal headroom is adequate: log 62 showed 37 KB free with the stack in
+     * PSRAM; reverting costs 8 KB → ~29 KB, well above the 21 KB OOM floor. */
+    cfg.stack_in_ext      = false;
     cfg.task_prio         = 23;
     /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
      *
