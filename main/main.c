@@ -334,17 +334,26 @@ void app_main(void)
 
     /* BT/WiFi coexistence arbiter — PREFER_BT.
      *
-     * Log 30 (PR #24, BALANCE) was a regression: it reintroduced the BT_L2CAP
-     * is_cong bursts that log 29 (PREFER_BT) had eliminated to zero (20 events
-     * vs 0), while steady-state HTTP throughput stayed pinned at ~12 KB/s —
-     * IDENTICAL to log 29. The coex preference does not move throughput because
-     * throughput is NOT radio-arbitration-limited: it is CPU-bound. The decode
-     * +SBC-encode chain scales linearly with clock (0.56x real-time at 160 MHz
-     * -> 0.84x at 240 MHz), and Core 0 (WiFi + BT controller + Bluedroid SBC
-     * encode + coex) is the saturated resource. BALANCE gave WiFi more Core-0
-     * airtime, which only crowded out BT's SBC path -> congestion returned with
-     * no throughput benefit. PREFER_BT keeps WiFi's Core-0 burden low (zero
-     * congestion in log 29) while we attack the actual CPU ceiling separately.
+     * History: log 30 (PR #24, BALANCE) was a regression vs log 29 (PREFER_BT) —
+     * it reintroduced BT_L2CAP is_cong bursts (20 events vs 0) with no throughput
+     * gain, so PREFER_BT was kept.  At the time this was attributed to Core 0
+     * (WiFi + BT controller + Bluedroid SBC encode + coex) being the saturated
+     * resource capping the decode+encode chain below real-time.
+     *
+     * UPDATE (log 64, after the PSRAM memory moves): Core 0 is no longer
+     * saturated.  Moving the Bluedroid host (BT_ALLOCATION_FROM_SPIRAM_FIRST) and
+     * WiFi/LWIP buffers (SPIRAM_TRY_ALLOCATE_WIFI_LWIP) to PSRAM lifted internal
+     * DRAM from ~54 KB to 121 KB free pre-pipeline and, by relieving the
+     * near-exhausted-heap thrash, dropped Core-0 load: IDLE0 8% -> 15%, BTC_TASK
+     * 20% -> 12%, btController 13% -> 10%.  Steady-state francemusique AAC then
+     * ran ~20 s with ZERO underflows; the 9 is_cong events are sporadic and
+     * recover without dropouts.  The remaining audible glitches are station-change
+     * / resampler-rebuild transients, not a steady-state CPU/throughput wall.
+     *
+     * PREFER_BT is KEPT as cheap insurance — there is headroom now (IDLE0 15%,
+     * IDLE1 42%) but it is not large, and PREFER_BT cost nothing.  It is no longer
+     * load-bearing against a CPU ceiling; that ceiling is no longer the binding
+     * constraint.
      *
      * Must be called after bt_manager_init() so the BT controller is registered
      * with the coexistence framework before the preference takes effect. */
