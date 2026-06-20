@@ -76,13 +76,18 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 # Static RX kept at 8 — these hold inbound audio frames; dropping them risks
 # losing data under BT/WiFi coexistence.
 #
-# If "wifi:m f null" becomes frequent under load, bump STATIC_TX_BUFFER_NUM
-# back toward 8–10 (trading some reclaimed DRAM for TX headroom).
+# Log 56: with NUM=6, "wifi:m f null" appeared 11× during the TLS handshake
+# (the ACK burst peaks at the TCP window boundary just as mbedTLS sends the
+# ClientFinished). The 6-buffer pool was sized for steady-state TCP ACKs only;
+# TLS adds a short burst of larger writes. Raised to 10 (16 KB) to eliminate
+# exhaustion. DRAM cost: +6.4 KB (4 extra × 1.6 KB); leaves ~12 KB DRAM free
+# after element stacks, which is still safe. If min-ever heap stays above 8 KB
+# in the next log, 10 is the correct value.
 #
-# VERIFY in the next log: wifi init must read "Init static tx buffer num: 6"
-# and "monitor: HEAP@start internal: ~42 KB" (was 26 KB).
+# VERIFY in the next log: "Init static tx buffer num: 10" at wifi init, and
+# zero "wifi:m f null" lines during TLS handshake.
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
-CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y

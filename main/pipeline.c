@@ -51,6 +51,18 @@ static pipeline_codec_t s_current_codec = PIPELINE_CODEC_AUTO;
 /* Mutex for protecting pipeline state during station changes */
 static SemaphoreHandle_t s_pipeline_mutex = NULL;
 
+/* Cache of the src rate/ch last pushed to rsp_filter via rsp_filter_set_src_info().
+ * Initialized to match create_resample_filter() so the first format-watcher fire
+ * (which always sees 48000/2 on boot station 0) is a no-op: the filter was created
+ * with those exact values and calling set_src_info a second time triggers
+ * esp_resample_destroy() on a handle whose internal queue may be NULL under DRAM
+ * pressure, producing vQueueDelete(NULL) → crash (log 54/55/56).
+ * Reset to -1/-1 in pipeline_change_station() so the next watcher fire always
+ * pushes through after a station change (the rsp_filter's stored rate may have
+ * reverted when the element was closed and reopened). */
+static int s_rsp_src_rate = 48000;
+static int s_rsp_src_ch   = 2;
+
 /* Forward declaration for static function used in pipeline_start */
 static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec);
 
@@ -153,10 +165,16 @@ esp_err_t pipeline_set_resample_src_info(int rate, int ch)
     if (rate <= 0 || ch <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* No caching here: a station change resets the elements (reverting the
-     * resampler toward its default src_rate), so the new rate must be pushed
-     * through unconditionally even when it equals the previous station's rate.
-     * The caller (format watcher in main.c) already throttles redundant polls. */
+    /* Skip if rate/ch match what the filter already has.  On first boot the
+     * cache is pre-loaded to 48000/2 (= create_resample_filter() init values),
+     * so the first watcher fire is silently ignored.  After a station change the
+     * cache is reset to -1/-1 (in pipeline_change_station()) so the next fire
+     * always calls through, even if the new station has the same rate. */
+    if (rate == s_rsp_src_rate && ch == s_rsp_src_ch) {
+        return ESP_OK;
+    }
+    s_rsp_src_rate = rate;
+    s_rsp_src_ch   = ch;
     esp_err_t ret = rsp_filter_set_src_info(s_resample_el, rate, ch);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Resampler source set to %d Hz / %d ch -> 44100 Hz / 2 ch", rate, ch);
@@ -403,6 +421,14 @@ esp_err_t pipeline_change_station(const char *new_url)
     }
 
     ESP_LOGI(TAG, "Changing station -> %s", new_url);
+
+    /* Invalidate the src-rate cache so the next format-watcher fire always
+     * calls rsp_filter_set_src_info(), even if the new station's rate equals
+     * the previous one.  The rsp_filter element will be closed and reopened
+     * below (via reset_elements + pipeline_run), so its internal handle is
+     * rebuilt from scratch and needs to be re-armed with the real stream rate. */
+    s_rsp_src_rate = -1;
+    s_rsp_src_ch   = -1;
 
     /* Detect codec and recreate decoder if needed */
     pipeline_codec_t new_codec = detect_codec_from_url(new_url);
