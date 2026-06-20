@@ -89,6 +89,16 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+# Dynamic RX stays at 8.  Log 61 exposed the real ceiling — a flood of "wifi:m f null"
+# (WiFi failing to allocate a dynamic RX buffer from internal DRAM) then NULL-queue
+# asserts (vQueueDelete/xQueueSemaphoreTake on handles never created because the alloc
+# returned NULL) with heap-at-start down to 21 KB.  The proper fix is to free internal
+# DRAM by moving the I/O-bound http_stream task stack (8 KB) to PSRAM — see the
+# SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY block below and create_http_stream() in pipeline.c.
+# We do NOT trim this pool: WIFI_RX_BA_WIN is 6 and IDF enforces
+# WIFI_DYNAMIC_RX_BUFFER_NUM >= WIFI_RX_BA_WIN at compile time (wifi_init.c #error), so
+# 6 is the floor — and the PSRAM stack move frees more DRAM (8 KB) than trimming to 6
+# would (~3 KB) without touching the RX cushion the inbound audio stream relies on.
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
@@ -144,14 +154,24 @@ CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
 # Audio pipeline — allow element task stacks to be allocated in PSRAM.
-# Without this, BT+WiFi exhaust internal DRAM and audio thread creation fails.
-# NOTE: xTaskCreateStaticPinnedToCore + PSRAM stack is broken in ADF v2.8 +
-# IDF v5.3.1 (returns NULL with 40 KB internal free). Disable to fall back to
-# xTaskCreatePinnedToCore. With this disabled, all task stacks are allocated
-# strictly in internal DRAM (SPIRAM_USE_MALLOC does NOT overflow stacks to PSRAM).
-# Ring buffer reductions (decoder 8KB, passthrough 4KB) free enough internal
-# DRAM for the audio task stacks to fit.
-CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=n
+#
+# ADF routes PSRAM stacks through xTaskCreateRestrictedPinnedToCore(), which is NOT a
+# stock IDF symbol — it is injected by ADF's idf_patches/idf_vX.Y_freertos.patch.  ADF
+# v2.8 ships those patches only up to idf_v5.2 (there is no idf_v5.3 patch).  On the
+# previous IDF v5.3.1 build the symbol was therefore absent, ADF fell back to internal
+# DRAM ("allocate stack on internal memory"), and log 61 hit the internal-DRAM ceiling:
+# a "wifi:m f null" flood + NULL-queue asserts, heap-at-start down to 21 KB.
+#
+# Fix: the CI now builds on IDF v5.2 (see .github/workflows/build.yml) and applies
+# idf_v5.2_freertos.patch, so xTaskCreateRestrictedPinnedToCore() exists and PSRAM
+# stacks work.  We enable the feature globally here but opt IN per element via
+# cfg.stack_in_ext: ONLY the I/O-bound http_stream task (8 KB) is moved to PSRAM
+# (create_http_stream() in pipeline.c).  The compute-bound decoder and resampler stacks
+# stay in fast internal DRAM — PSRAM is 40 MHz cache-backed, and putting a DSP task
+# stack there would tank decode throughput (the reason we run at 240 MHz).  Moving just
+# the http stack frees ~8 KB of internal DRAM with no decode-perf risk.
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
 
 # FreeRTOS stack overflow detection — canary pattern at stack low-water mark, checked on every

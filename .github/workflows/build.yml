@@ -22,14 +22,22 @@ env:
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # Job 1: Compile firmware inside the official Espressif IDF Docker container.
-  # Container ships with IDF v5.3.1 toolchain + Python packages pre-installed.
+  # Container ships with IDF v5.2.3 toolchain + Python packages pre-installed.
+  #
+  # Why IDF v5.2 (not v5.3): ADF v2.8 routes PSRAM task stacks through
+  # xTaskCreateRestrictedPinnedToCore(), a non-stock symbol added only by ADF's
+  # idf_patches/idf_vX.Y_freertos.patch.  ADF v2.8 ships those patches only up to
+  # idf_v5.2 — there is no idf_v5.3 patch.  On v5.3.1 the symbol was absent, ADF fell
+  # back to internal-DRAM stacks, and the device hit the internal-DRAM ceiling (log 61:
+  # "wifi:m f null" flood + NULL-queue asserts).  Building on v5.2 lets us apply the
+  # patch and move the http_stream stack to PSRAM, freeing ~8 KB of internal DRAM.
   # We clone ESP-ADF components on top and cache them between runs.
   # ─────────────────────────────────────────────────────────────────────────────
   build:
     name: Firmware (ESP32-WROVER)
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:v5.3.1
+      image: espressif/idf:v5.2.3
     defaults:
       run:
         # GitHub Actions uses sh by default inside Docker containers.
@@ -54,19 +62,45 @@ jobs:
             esp-adf-${{ env.ADF_VERSION }}-
 
       - name: Clone ESP-ADF
-        if: steps.cache-adf.outputs.cache-hit != 'true'
+        # Guard on the actual directory, not steps.cache-adf.outputs.cache-hit.
+        # cache-hit is 'true' ONLY on an exact key match; a restore-key (prefix)
+        # match still populates $ADF_PATH but reports cache-hit=false, which made
+        # this step try to clone into a non-empty dir ("destination path already
+        # exists") whenever build.yml changed and bumped the cache key. The restored
+        # tree is a valid v2.8 ADF (same ADF_VERSION), so reuse it when present.
         run: |
-          git clone --depth=1 --branch "$ADF_VERSION" \
-            https://github.com/espressif/esp-adf.git "$ADF_PATH"
-          cd "$ADF_PATH"
-          # Init only the components/ subtree — the container already has IDF,
-          # so we skip ADF's bundled esp-idf submodule (saves ~500MB and 3min).
-          git submodule update --init --recursive --depth=1 -- components/
+          if [ -d "$ADF_PATH/components" ]; then
+            echo "ESP-ADF already present (cache restore) — skipping clone."
+          else
+            git clone --depth=1 --branch "$ADF_VERSION" \
+              https://github.com/espressif/esp-adf.git "$ADF_PATH"
+            cd "$ADF_PATH"
+            # Init only the components/ subtree — the container already has IDF,
+            # so we skip ADF's bundled esp-idf submodule (saves ~500MB and 3min).
+            git submodule update --init --recursive --depth=1 -- components/
+          fi
 
       - name: Point ADF at the container's IDF
         # ADF expects $ADF_PATH/esp-idf to exist; symlink it to the container's IDF
         # so version resolution works without duplicating the full IDF clone.
         run: ln -sfn "$IDF_PATH" "$ADF_PATH/esp-idf"
+
+      - name: Apply ADF FreeRTOS patch (PSRAM task stacks)
+        # ADF's PSRAM-stack path calls xTaskCreateRestrictedPinnedToCore(), which is
+        # injected into FreeRTOS by this patch.  ADF's normal install.sh applies it;
+        # our CI symlinks a stock IDF and skips install.sh, so apply it explicitly.
+        # Idempotent: --reverse --check detects an already-patched tree (e.g. a cache
+        # hit where a previous run patched the IDF) and skips re-applying.
+        run: |
+          PATCH="$ADF_PATH/idf_patches/idf_v5.2_freertos.patch"
+          cd "$IDF_PATH"
+          git config --global --add safe.directory "$IDF_PATH"
+          if git apply --reverse --check "$PATCH" 2>/dev/null; then
+            echo "FreeRTOS patch already applied — skipping."
+          else
+            git apply --verbose "$PATCH"
+            echo "FreeRTOS patch applied."
+          fi
 
       - name: Set build target (ESP32)
         run: |
