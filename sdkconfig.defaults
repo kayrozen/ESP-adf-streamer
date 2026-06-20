@@ -199,6 +199,24 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 
+# mbedTLS allocations -> PSRAM (not internal DRAM).
+#
+# After the skip-verify fix above, TLS got one step further and failed in
+# mbedtls_ssl_setup() with:
+#   E esp-tls-mbedtls: mbedtls_ssl_setup returned -0x7F00
+#   I esp-tls-mbedtls: SSL - Memory allocation failed
+# -0x7F00 = MBEDTLS_ERR_SSL_ALLOC_FAILED. ssl_setup() allocates the TLS record
+# I/O buffers (default 16 KB in + 16 KB out = 32 KB) from INTERNAL DRAM, where
+# our streaming-phase min-ever is ~7 KB (logs 41/42) — far too little, so the
+# allocation fails and the https:// stream aborts on open.
+#
+# CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC routes all mbedTLS allocations to PSRAM
+# (~3.7 MB free) instead of internal DRAM. The 32 KB of TLS buffers are not
+# DMA buffers, so PSRAM is a valid home for them. This is the IDF-recommended
+# configuration for TLS on PSRAM-equipped boards with tight internal DRAM.
+# (Requires CONFIG_SPIRAM_USE_MALLOC=y, already set above.)
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
 # Phase D — station rotation: cycle MP3 -> AAC -> HLS mono -> HLS multi every
 # 30 s without dropping the A2DP link. Exercises the decoder hot-swap
 # (MP3<->AAC) and the HTTPS/TLS + HLS-playlist paths that the plaintext MP3
