@@ -129,15 +129,18 @@ static audio_element_handle_t create_resample_filter(void)
      * decoder stalls (perceived as 1-second drops).  L2CAP is_cong_cback_context
      * errors in logs 49-53 are the same mismatch on the BT side.
      *
-     * ESP-ADF rsp_filter updates src_rate automatically from the upstream element's
-     * music info, so this handles both MP3 (44100 Hz, no-op pass-through) and
-     * AAC (48000 Hz, downsampled to 44100 Hz) without extra code.
+     * rsp_filter does NOT learn the upstream rate on its own (ADF elements only
+     * exchange raw PCM through ring buffers), so it is created at 44100 Hz here
+     * and the decoder's real output rate is pushed in at runtime via
+     * pipeline_set_resample_src_info() — see the format watcher in main.c. That
+     * makes it a no-op pass-through for 44100 Hz MP3 and a 48000->44100 Hz
+     * downsample for AAC.
      *
      * PCM_JITTER_RB_SIZE (512 KB) is placed here, on the resampler's output ring
      * buffer (44100 Hz, 176.4 KB/s), giving 2.9 s of reserve for HTTPS delivery
      * stalls — same headroom as before, but now at the correct sample rate. */
     rsp_filter_cfg_t cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
-    cfg.src_rate    = 44100;  /* initial; rsp_filter updates from pipeline music-info */
+    cfg.src_rate    = 44100;  /* initial; updated at runtime via pipeline_set_resample_src_info() */
     cfg.src_ch      = 2;
     cfg.dest_rate   = 44100;  /* fixed to match JBL SBC negotiation */
     cfg.dest_ch     = 2;
