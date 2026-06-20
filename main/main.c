@@ -151,6 +151,14 @@ static void run_event_loop(void)
                         fmt_logged_ch   = ai.channels;
                         ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
                                  ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
+                        /* Push the decoder's real output rate to the resampler.
+                         * rsp_filter cannot learn it on its own (elements only
+                         * exchange raw PCM via ring buffers), so without this the
+                         * resampler stays at its 44100 Hz default and 1:1 passes
+                         * 48000 Hz AAC through — the very mismatch this stage is
+                         * meant to remove.  This polling watcher is the reliable
+                         * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
+                        pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
                     }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {

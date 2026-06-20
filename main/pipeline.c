@@ -42,6 +42,12 @@ static audio_element_handle_t    s_resample_el  = NULL;
 static audio_element_handle_t    s_a2dp_el      = NULL;
 static audio_event_iface_handle_t s_evt         = NULL;
 
+/* Last source format pushed to the resampler. The resampler is created at
+ * 44100 Hz; these track what pipeline_set_resample_src_info() last applied so
+ * repeated decoder-format polls don't re-arm the resampler needlessly. */
+static int s_rsp_src_rate = 44100;
+static int s_rsp_src_ch   = 2;
+
 /* Peer BDA cache */
 static uint8_t s_peer_bda[6] = {0};
 
@@ -140,6 +146,25 @@ static audio_element_handle_t create_resample_filter(void)
     cfg.task_stack  = 6 * 1024;
     cfg.out_rb_size = PCM_JITTER_RB_SIZE;
     return rsp_filter_init(&cfg);
+}
+
+esp_err_t pipeline_set_resample_src_info(int rate, int ch)
+{
+    if (!s_resample_el || rate <= 0 || ch <= 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (rate == s_rsp_src_rate && ch == s_rsp_src_ch) {
+        return ESP_OK;  /* already configured for this source format */
+    }
+    esp_err_t ret = rsp_filter_set_src_info(s_resample_el, rate, ch);
+    if (ret == ESP_OK) {
+        s_rsp_src_rate = rate;
+        s_rsp_src_ch   = ch;
+        ESP_LOGW(TAG, "Resampler source set to %d Hz / %d ch -> 44100 Hz / 2 ch", rate, ch);
+    } else {
+        ESP_LOGE(TAG, "rsp_filter_set_src_info(%d,%d) failed: %d", rate, ch, ret);
+    }
+    return ret;
 }
 
 /* Create decoder based on codec type */
