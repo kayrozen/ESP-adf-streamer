@@ -100,6 +100,16 @@ static void run_event_loop(void)
     uint64_t stall_last_bytes = 0;
     int64_t  stall_since_us   = esp_timer_get_time();
 
+    /* Decoded-PCM format watcher. The REPORT_MUSIC_INFO event only reliably
+     * fires for the very first stream (it is swallowed for later stations after
+     * a decoder hot-swap), so the AAC stations never logged their decoded
+     * format. Corrupt audio with clean delivery (choppy / white noise but no
+     * underflows) is classically a sample-rate or channel mismatch handed to
+     * the SBC encoder, so log the format directly from the decoder whenever it
+     * changes. */
+    int  fmt_logged_rate = -1;
+    int  fmt_logged_ch   = -1;
+
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
         audio_event_iface_msg_t msg;
@@ -126,6 +136,14 @@ static void run_event_loop(void)
                 if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
                     audio_element_info_t ai = {0};
                     audio_element_getinfo(dec_el, &ai);
+                    if (ai.sample_rates != 0 &&
+                        (ai.sample_rates != fmt_logged_rate ||
+                         ai.channels    != fmt_logged_ch)) {
+                        fmt_logged_rate = ai.sample_rates;
+                        fmt_logged_ch   = ai.channels;
+                        ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
+                                 ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
+                    }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {
                         stall_last_bytes = cur_bytes;
