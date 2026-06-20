@@ -83,14 +83,22 @@ static esp_err_t restart_pipeline_station(const char *url)
 /* Pending station index set by timer callback, consumed in event loop thread */
 static volatile int s_next_station_request = -1;
 static esp_timer_handle_t s_rotation_timer  = NULL;
+/* s_rotation_next_idx is shared between the esp_timer task (rotation_timer_cb,
+ * priority 22) and the main event loop task (advance_to_next_station, priority
+ * 1).  Both run on Core 0 so they can't run in parallel, but the timer CAN
+ * preempt the event loop mid-update.  Use __atomic_* for both the read-modify-
+ * write in the callback and the conditional store in advance_to_next_station. */
 static int s_rotation_next_idx = 1;  /* skip idx 0 — already playing at start */
 
 static void rotation_timer_cb(void *arg)
 {
-    if (s_rotation_next_idx < NUM_TEST_STATIONS) {
-        s_next_station_request = s_rotation_next_idx++;
+    int cur = __atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST);
+    if (cur < NUM_TEST_STATIONS) {
+        /* fetch_add returns old value and increments atomically — equivalent to
+         * s_next_station_request = s_rotation_next_idx++ but race-free. */
+        s_next_station_request = __atomic_fetch_add(&s_rotation_next_idx, 1, __ATOMIC_SEQ_CST);
     }
-    if (s_rotation_next_idx >= NUM_TEST_STATIONS) {
+    if (__atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST) >= NUM_TEST_STATIONS) {
         esp_timer_stop(s_rotation_timer);
     }
 }
@@ -139,9 +147,12 @@ static void advance_to_next_station(void)
     /* Keep the rotation timer's next index ahead of where we just landed so its
      * sweep resumes AFTER the current station rather than replaying an earlier
      * one.  Guarded against moving backward so a wrap-around advance (last -> 0)
-     * does not restart a sweep that has already completed. */
-    if (s_rotation_next_idx <= s_current_station) {
-        s_rotation_next_idx = s_current_station + 1;
+     * does not restart a sweep that has already completed.
+     * Atomic load/store: the timer callback can preempt this task between the
+     * comparison and the store, corrupting the index. */
+    int next = __atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST);
+    if (next <= s_current_station) {
+        __atomic_store_n(&s_rotation_next_idx, s_current_station + 1, __ATOMIC_SEQ_CST);
     }
 #endif
 }
@@ -216,8 +227,6 @@ static void run_event_loop(void)
                             s_fmt_pending_count = 1;
                         }
                         if (s_fmt_pending_count >= FMT_DEBOUNCE_POLLS) {
-                            s_fmt_logged_rate = ai.sample_rates;
-                            s_fmt_logged_ch   = ai.channels;
                             ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
                                      ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
                             /* Push the decoder's real output rate to the resampler.
@@ -226,8 +235,16 @@ static void run_event_loop(void)
                              * resampler stays at its 44100 Hz default and 1:1 passes
                              * 48000 Hz AAC through — the very mismatch this stage is
                              * meant to remove.  This polling watcher is the reliable
-                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
-                            pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
+                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap.
+                             *
+                             * Update tracked state ONLY on success: if the call fails
+                             * (e.g. pipeline mutex timeout), leaving the logged vars
+                             * unchanged lets the next poll retry rather than silently
+                             * locking in a misconfigured resampler for the stream. */
+                            if (pipeline_set_resample_src_info(ai.sample_rates, ai.channels) == ESP_OK) {
+                                s_fmt_logged_rate = ai.sample_rates;
+                                s_fmt_logged_ch   = ai.channels;
+                            }
                         }
                     }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
@@ -366,17 +383,15 @@ void app_main(void)
      * DRAM from ~54 KB to 121 KB free pre-pipeline and, by relieving the
      * near-exhausted-heap thrash, dropped Core-0 load: IDLE0 8% -> 15%, BTC_TASK
      * 20% -> 12%, btController 13% -> 10%.  Steady-state francemusique AAC then
-     * ran ~20 s with ZERO underflows; the 9 is_cong events are sporadic and
-     * recover without dropouts.  The remaining audible glitches are station-change
-     * / resampler-rebuild transients, not a steady-state CPU/throughput wall.
+     * ran ~20 s with ZERO underflows.
      *
-     * PREFER_BT is KEPT as cheap insurance — there is headroom now (IDLE0 15%,
-     * IDLE1 42%) but it is not large, and PREFER_BT cost nothing.  It is no longer
-     * load-bearing against a CPU ceiling; that ceiling is no longer the binding
-     * constraint.
-     *
-     * Must be called after bt_manager_init() so the BT controller is registered
-     * with the coexistence framework before the preference takes effect. */
+     * UPDATE (log 65, after format-watcher debounce fix): remaining is_cong events
+     * are a STARTUP BURST phenomenon — 17 events concentrated in t=12-17s (the
+     * first 5s of streaming after the TLS handshake) then ZERO for the rest of the
+     * session.  Root cause: BT's L2CAP ACL buffer fills faster than the BT radio
+     * can drain it while WiFi wakes every 102ms (PS_MIN_MODEM li=1).  Addressed by
+     * wifi_manager.c: WIFI_PS_MAX_MODEM + listen_interval=3 (307ms sleep windows),
+     * giving BT ~97% airtime.  PREFER_BT is kept as a secondary layer. */
     ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);
