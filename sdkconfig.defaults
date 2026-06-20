@@ -177,7 +177,12 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # Phase D — station rotation: cycle MP3 -> AAC -> HLS mono -> HLS multi every
-# 60 s without dropping the A2DP link. Exercises the decoder hot-swap
+# 30 s without dropping the A2DP link. Exercises the decoder hot-swap
 # (MP3<->AAC) and the HTTPS/TLS + HLS-playlist paths that the plaintext MP3
 # baseline never touched.
+#
+# NOTE: this option is defined in main/Kconfig.projbuild (a COMPONENT dir).
+# ESP-IDF only scans Kconfig.projbuild inside components, never the project
+# root — a root-level Kconfig.projbuild is silently ignored, which is why the
+# first Phase D enable (PR #28) had no effect.
 CONFIG_PROTOTYPE_PHASE_D_ROTATION=y
