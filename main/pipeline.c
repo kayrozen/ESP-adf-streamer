@@ -84,6 +84,14 @@ static audio_element_handle_t create_http_stream(void)
      * in sync with CONFIG_HTTP_STREAM_TASK_STACK_SIZE frees 4 KB of internal DRAM that
      * esp_timer_create (MALLOC_CAP_INTERNAL) needs during the handshake.  CANARY catches overflow. */
     cfg.task_stack        = 8 * 1024;
+    /* Move THIS stack (8 KB) to PSRAM.  The http task is I/O-bound (it blocks on the
+     * socket and mbedTLS), so a 40 MHz cache-backed PSRAM stack costs negligible
+     * throughput, while freeing 8 KB of scarce internal DRAM — the fix for the
+     * "wifi:m f null" + NULL-queue-assert exhaustion in log 61.  Requires
+     * SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y plus ADF's idf_v5.2_freertos.patch (applied
+     * in CI).  stack_in_ext already defaults true in HTTP_STREAM_CFG_DEFAULT(); set
+     * explicitly so the intent is local and survives a macro change. */
+    cfg.stack_in_ext      = true;
     cfg.task_prio         = 23;
     /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
      *
@@ -120,6 +128,11 @@ static audio_element_handle_t create_mp3_decoder(void)
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
     cfg.out_rb_size       = DECODER_TO_RSP_RB_SIZE;  /* hop to rsp_filter; jitter buffer is on rsp_filter.out_rb */
+    /* Keep this stack in INTERNAL DRAM even though SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y.
+     * The decoder is compute-bound; a PSRAM stack (40 MHz cache-backed) would slow the
+     * tight DSP loops and bring back the real-time underrun we fixed with 240 MHz. Only
+     * the I/O-bound http_stream stack is allowed in PSRAM. */
+    cfg.stack_in_ext      = false;
     return mp3_decoder_init(&cfg);
 }
 
@@ -131,6 +144,8 @@ static audio_element_handle_t create_aac_decoder(void)
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
     cfg.out_rb_size       = DECODER_TO_RSP_RB_SIZE;  /* hop to rsp_filter; jitter buffer is on rsp_filter.out_rb */
+    /* Compute-bound — keep stack in internal DRAM (see create_mp3_decoder note). */
+    cfg.stack_in_ext      = false;
     return aac_decoder_init(&cfg);
 }
 
@@ -168,6 +183,8 @@ static audio_element_handle_t create_resample_filter(int src_rate, int src_ch)
     cfg.task_prio   = 22;     /* just below decoder (23) */
     cfg.task_stack  = 4 * 1024;  /* resample task only calls esp_resample_process(); heap-allocated bufs; 4 KB ample */
     cfg.out_rb_size = PCM_JITTER_RB_SIZE;
+    /* DSP task — keep stack in internal DRAM (see create_mp3_decoder note). */
+    cfg.stack_in_ext = false;
     return rsp_filter_init(&cfg);
 }
 
