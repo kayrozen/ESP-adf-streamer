@@ -46,9 +46,12 @@
 #define STATION_HLS_URL \
     "https://stream.radiofrance.fr/franceinter/franceinter_hifi.m3u8"
 
-/* Phase B step 4: HLS with master+variant playlists (multi-bitrate) */
+/* Phase B step 4: second HTTPS AAC Icecast (France Culture).
+ * BBC Radio 1 HLS nonuk/sbr_low path returned HTTP 410 Gone in logs 48/49 —
+ * the nonuk CDN tier has been decommissioned by the BBC.  Replaced with France
+ * Culture AAC Icecast which is known reachable from the same network. */
 #define STATION_HLS_MULTI_URL \
-    "https://a.files.bbci.co.uk/media/live/manifesto/audio/simulcast/hls/nonuk/sbr_low/ak/bbc_radio_one.m3u8"
+    "https://icecast.radiofrance.fr/franceculture-hifi.aac"
 
 /* Station table — used for rotation test in Phase D */
 typedef struct {
