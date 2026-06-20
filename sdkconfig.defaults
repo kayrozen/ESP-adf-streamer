@@ -149,8 +149,17 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=n
 CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
 
-# HTTP stream task stack — 8KB for TLS handshake headroom (raised from 6KB; rsp_filter DRAM addition shifted heap layout)
-CONFIG_HTTP_STREAM_TASK_STACK_SIZE=8192
+# FreeRTOS stack overflow detection — canary pattern at stack low-water mark, checked on every
+# context switch.  Minimal overhead; makes overflows fail loudly with the task name instead of
+# silently corrupting adjacent heap objects (the bug that caused the vQueueDelete crash).
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+
+# HTTP stream task stack — 12 KB required for TLS certificate parsing + key exchange call frames.
+# With MBEDTLS_EXTERNAL_MEM_ALLOC=y the TLS I/O buffers are in PSRAM, but function call frames
+# (ASN.1 parsing, RSA ops) still consume the task stack.  8 KB overflows during the handshake
+# and silently corrupts adjacent heap objects, manifesting as vQueueDelete(NULL) or abort().
+# Confirmed by boot-2 backtrace showing addresses above the code segment end (corrupted frames).
+CONFIG_HTTP_STREAM_TASK_STACK_SIZE=12288
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
