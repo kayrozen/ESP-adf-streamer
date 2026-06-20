@@ -89,7 +89,24 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+# Dynamic RX cut 8 -> 4.  Log 61 (binary dea01acb1, the 8 KB http-stack fix) cleared
+# the TLS-timer OOM but exposed the deeper ceiling: a flood of "wifi:m f null" (21
+# across 3 boots) followed by NULL-queue asserts (vQueueDelete/xQueueSemaphoreTake
+# on handles that were never created because the alloc returned NULL).  "m f null"
+# is the WiFi driver failing to allocate a DYNAMIC RX buffer from internal DRAM
+# while BT + the 4-element pipeline + TLS already pin most of it (heap-at-start fell
+# to 21 KB).  These buffers are allocated on demand and freed after use, so capping
+# the pool 8 -> 4 halves WiFi's peak internal-DRAM appetite (~6.4 KB) and directly
+# targets the flood; dropped RX frames are recovered by TCP retransmit.
+#
+# The clean fix would be moving the 19 KB of element task stacks to PSRAM, but ADF
+# v2.8 routes PSRAM stacks through xTaskCreateRestrictedPinnedToCore(), which is not
+# a stock IDF symbol — it is added by ADF's idf_patches/idf_vX.Y_freertos.patch.
+# ADF v2.8 ships those patches only up to idf_v5.2; there is NO idf_v5.3 patch and we
+# build on IDF v5.3.1, so the symbol is absent and ADF falls back to internal-DRAM
+# stacks ("allocate stack on internal memory" in the logs).  Hand-porting the v5.2
+# MPU patch to v5.3.1 is possible but fragile, so buffer-trimming is the chosen lever.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
