@@ -16,6 +16,33 @@
 
 static const char *TAG = "pipeline";
 
+/* PCM-side jitter buffer feeding a2dp_stream — THE buffer that rides out input
+ * delivery stalls. The decoder eagerly fills it until full then blocks, so it
+ * stays near-full and the BT sink drains it in real time. Its depth sets how
+ * long a no-data gap on the source the audio can survive without a dropout.
+ *
+ *   24KB  (original) ≈ 0.13s @ 48kHz/stereo/16-bit (192KB/s) — too short for the
+ *                       200-500ms BT/WiFi coexistence stalls (logs 21-23 chop).
+ *   256KB (PR pre-D)  ≈ 1.33s — fixed the MP3 baseline (plaintext HTTP, smooth
+ *                       server pacing); gap-free in logs 35/36.
+ *   512KB (now)       ≈ 2.67s — needed for the HTTPS AAC/HLS streams. Log 47
+ *                       (steady AAC from icecast.radiofrance.fr) showed the TLS
+ *                       socket delivering NOTHING for 1.38s, 1.35s and 2.08s at
+ *                       a time, then bursting 30-57KB/s to catch up. TLS hands
+ *                       data over in burstier encrypted records and its per-
+ *                       record decrypt adds Core-0 pressure (http 23%, IDLE0 8%
+ *                       in the log), so the server<->socket pacing develops
+ *                       multi-second gaps the plaintext MP3 path never had. A
+ *                       1.38s gap just exceeds the 256KB (1.33s) buffer, draining
+ *                       it to a brief dropout every ~12s — the reported AAC chop.
+ *                       512KB absorbs the observed 2.08s worst case with margin.
+ *
+ * Lives in PSRAM (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), ~3.5MB free, so
+ * it costs no internal DRAM. Only one decoder is alive at a time except a brief
+ * hot-swap overlap (2x512KB = 1MB peak), well within PSRAM headroom. Adds ~2.7s
+ * startup/seek latency, irrelevant for internet radio. */
+#define PCM_JITTER_RB_SIZE  (512 * 1024)
+
 /* Pipeline handles */
 static audio_pipeline_handle_t   s_pipeline     = NULL;
 static audio_element_handle_t    s_http_el      = NULL;
@@ -78,14 +105,7 @@ static audio_element_handle_t create_mp3_decoder(void)
      * with the 240 MHz bump this clears the real-time decode budget with margin. */
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
-    /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
-     * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
-     * while the decoder refills it in bursts. The old 24KB held only ~125ms at
-     * 48kHz/stereo/16-bit (192KB/s) — far shorter than the 200-500ms coexistence
-     * stalls that caused log 21-23 choppiness. 256KB ≈ 1.36s of headroom. PSRAM
-     * has ~4MB free, so this costs no internal DRAM. (Adds ~1.3s startup latency,
-     * irrelevant for internet radio.) */
-    cfg.out_rb_size       = 256 * 1024;
+    cfg.out_rb_size       = PCM_JITTER_RB_SIZE;  /* see PCM_JITTER_RB_SIZE note */
     return mp3_decoder_init(&cfg);
 }
 
@@ -96,14 +116,7 @@ static audio_element_handle_t create_aac_decoder(void)
      * decode off Core 0, which is saturated by WiFi + BT + coexistence. */
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
-    /* PCM-side jitter buffer feeding a2dp_stream. This is THE buffer that rides
-     * out BT TX / BT-WiFi coexistence stalls: the BT sink drains it in real time
-     * while the decoder refills it in bursts. The old 24KB held only ~125ms at
-     * 48kHz/stereo/16-bit (192KB/s) — far shorter than the 200-500ms coexistence
-     * stalls that caused log 21-23 choppiness. 256KB ≈ 1.36s of headroom. PSRAM
-     * has ~4MB free, so this costs no internal DRAM. (Adds ~1.3s startup latency,
-     * irrelevant for internet radio.) */
-    cfg.out_rb_size       = 256 * 1024;
+    cfg.out_rb_size       = PCM_JITTER_RB_SIZE;  /* see PCM_JITTER_RB_SIZE note */
     return aac_decoder_init(&cfg);
 }
 
