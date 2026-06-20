@@ -61,7 +61,7 @@ static audio_element_handle_t create_http_stream(void)
     http_stream_cfg_t cfg = HTTP_STREAM_CFG_DEFAULT();
     cfg.type              = AUDIO_STREAM_READER;
     cfg.enable_playlist_parser = true;   /* HLS playlist support */
-    cfg.task_stack        = 8 * 1024;   /* TLS handshake (HTTPS AAC/HLS stations) runs on this task — 8KB for headroom */
+    cfg.task_stack        = 12 * 1024;  /* TLS cert-parse + key-exchange needs ~8-10 KB of call frames; 12 KB gives margin */
     cfg.task_prio         = 23;
     /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
      *
@@ -140,7 +140,7 @@ static audio_element_handle_t create_resample_filter(void)
     cfg.dest_ch     = 2;
     cfg.task_core   = 1;
     cfg.task_prio   = 22;     /* just below decoder (23) */
-    cfg.task_stack  = 6 * 1024;
+    cfg.task_stack  = 4 * 1024;  /* resample task only calls esp_resample_process(); heap-allocated bufs; 4 KB ample */
     cfg.out_rb_size = PCM_JITTER_RB_SIZE;
     return rsp_filter_init(&cfg);
 }
