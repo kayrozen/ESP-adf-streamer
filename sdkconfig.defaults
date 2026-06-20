@@ -159,12 +159,14 @@ CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
 # silently corrupting adjacent heap objects (the bug that caused the vQueueDelete crash).
 CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
 
-# HTTP stream task stack — 12 KB required for TLS certificate parsing + key exchange call frames.
-# With MBEDTLS_EXTERNAL_MEM_ALLOC=y the TLS I/O buffers are in PSRAM, but function call frames
-# (ASN.1 parsing, RSA ops) still consume the task stack.  8 KB overflows during the handshake
-# and silently corrupts adjacent heap objects, manifesting as vQueueDelete(NULL) or abort().
-# Confirmed by boot-2 backtrace showing addresses above the code segment end (corrupted frames).
-CONFIG_HTTP_STREAM_TASK_STACK_SIZE=12288
+# HTTP stream task stack — 8 KB is sufficient for mbedTLS TLS 1.2 RSA call frames (ASN.1 parsing,
+# key exchange).  With MBEDTLS_EXTERNAL_MEM_ALLOC=y the 32 KB TLS I/O buffers live in PSRAM;
+# only the call-frame chain sits on the http task stack.  The previous 12 KB value was based on a
+# misread of the log-55 backtrace (corrupted by the vQueueDelete heap corruption, now fixed).
+# 12→8 KB frees 4 KB of internal DRAM that esp_timer_create needs for its MALLOC_CAP_INTERNAL
+# allocation during the TLS handshake.  FREERTOS_CHECK_STACKOVERFLOW_CANARY will catch any genuine
+# overflow loudly (task name + stack address) before it corrupts adjacent heap objects.
+CONFIG_HTTP_STREAM_TASK_STACK_SIZE=8192
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
