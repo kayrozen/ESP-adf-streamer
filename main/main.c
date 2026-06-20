@@ -163,7 +163,7 @@ static void run_event_loop(void)
                 if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
                     audio_element_info_t ai = {0};
                     audio_element_getinfo(dec_el, &ai);
-                    if (ai.sample_rates != 0 &&
+                    if (ai.sample_rates > 0 && ai.channels > 0 &&
                         (ai.sample_rates != s_fmt_logged_rate ||
                          ai.channels    != s_fmt_logged_ch)) {
                         s_fmt_logged_rate = ai.sample_rates;

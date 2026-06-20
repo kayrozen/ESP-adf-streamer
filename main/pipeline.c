@@ -147,8 +147,11 @@ static audio_element_handle_t create_resample_filter(void)
 
 esp_err_t pipeline_set_resample_src_info(int rate, int ch)
 {
-    if (!s_resample_el || rate <= 0 || ch <= 0) {
+    if (!s_resample_el) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (rate <= 0 || ch <= 0) {
+        return ESP_ERR_INVALID_ARG;
     }
     /* No caching here: a station change resets the elements (reverting the
      * resampler toward its default src_rate), so the new rate must be pushed
@@ -241,10 +244,10 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
 
     if (!s_http_el || !s_decoder_el || !s_resample_el || !s_a2dp_el) {
         ESP_LOGE(TAG, "Failed to create one or more pipeline elements");
-        if (s_http_el)     audio_element_deinit(s_http_el);
-        if (s_decoder_el)  audio_element_deinit(s_decoder_el);
-        if (s_resample_el) audio_element_deinit(s_resample_el);
-        if (s_a2dp_el)     audio_element_deinit(s_a2dp_el);
+        if (s_http_el)     { audio_element_deinit(s_http_el);     s_http_el = NULL; }
+        if (s_decoder_el)  { audio_element_deinit(s_decoder_el);  s_decoder_el = NULL; }
+        if (s_resample_el) { audio_element_deinit(s_resample_el); s_resample_el = NULL; }
+        if (s_a2dp_el)     { audio_element_deinit(s_a2dp_el);     s_a2dp_el = NULL; }
         audio_pipeline_deinit(s_pipeline);
         s_pipeline = NULL;
         return ESP_FAIL;
