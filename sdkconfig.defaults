@@ -176,6 +176,29 @@ CONFIG_NVS_ENCRYPTION=n
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
+# TLS — skip server certificate verification (prototype only).
+#
+# ESP-IDF v5.3.1 added a strict check in esp_mbedtls_set_client_config():
+# if none of {cacert_buf, crt_bundle_attach, use_global_ca_store,
+# skip_server_cert_verify} is set, the TLS setup returns
+# ESP_ERR_MBEDTLS_SSL_SETUP_FAILED ("No server verification option set").
+#
+# ESP-ADF v2.8's http_stream.c was released before this check existed and
+# does NOT set crt_bundle_attach on its internal esp_http_client_config_t,
+# so every https:// URL (AAC Icecast, HLS Radio France, BBC HLS) hit this
+# error immediately after the station switch, producing:
+#   E esp-tls-mbedtls: No server verification option set … [0x8017]
+# and aborting the stream (observed in logs 41/42 at the first MP3→AAC
+# switch 30 s into Phase D rotation).
+#
+# CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY makes skip_server_cert_verify=true
+# the default, which satisfies the check without requiring cert data.
+# CONFIG_ESP_TLS_INSECURE must be enabled first (it gates the skip option).
+# The cert bundle symbols above are kept so they can be wired in properly
+# when productising (replace skip with crt_bundle_attach in http_stream).
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
 # Phase D — station rotation: cycle MP3 -> AAC -> HLS mono -> HLS multi every
 # 30 s without dropping the A2DP link. Exercises the decoder hot-swap
 # (MP3<->AAC) and the HTTPS/TLS + HLS-playlist paths that the plaintext MP3
