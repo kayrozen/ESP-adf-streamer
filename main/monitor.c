@@ -17,11 +17,16 @@ static SemaphoreHandle_t s_monitor_mutex = NULL;
  *
  * Why not vTaskGetRunTimeStats(): on ESP-IDF v5.3's SMP FreeRTOS it renders an
  * empty string (logs 26/29/30 all show a blank "CPU runtime stats:" line), so
- * we lost all CPU visibility exactly when the workload became CPU-bound.
+ * we lost all CPU visibility exactly when we needed to diagnose the load.
  * uxTaskGetSystemState() is reliable. The IDLE0 / IDLE1 rows give each core's
- * idle headroom directly — that is what confirms whether Core 0 (WiFi + BT
- * controller + Bluedroid SBC encode + coex) is the saturated resource that
- * caps the decode+encode chain below real-time.
+ * idle headroom directly — this is how we tracked Core 0 (WiFi + BT controller
+ * + Bluedroid SBC encode + coex) load across the tuning work.
+ *
+ * Historical note: early logs (e.g. log 32) showed Core 0 at ~92% busy (IDLE0
+ * 8%) and it was treated as the saturated resource.  After the PSRAM memory
+ * moves (BT host + WiFi/LWIP to PSRAM) log 64 shows IDLE0 back at 15% with the
+ * BT stack lighter — Core 0 is no longer the binding constraint.  This table is
+ * still the primary signal for spotting any regression back toward saturation.
  *
  * The buffer is sized from the live task count (+headroom) and allocated in
  * PSRAM per call: a fixed cap risks uxTaskGetSystemState() returning 0 when

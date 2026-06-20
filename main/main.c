@@ -33,7 +33,7 @@ static const char *TAG = "app_main";
 static const station_t TEST_STATIONS[NUM_TEST_STATIONS] = {
     { "AAC Icecast (boot)",  STATION_AAC_URL        },
     { "MP3 Icecast",         STATION_MP3_URL        },
-    { "HLS (CBC Radio One)", STATION_HLS_URL        },
+    { "France Inter HLS",    STATION_HLS_URL        },
     { "France Culture AAC",  STATION_HLS_MULTI_URL  },
 };
 
@@ -53,14 +53,27 @@ static int s_station_error_count = 0;
 static int s_fmt_logged_rate = -1;
 static int s_fmt_logged_ch   = -1;
 
+/* Format-watcher debounce: the AAC decoder reports a transient sample_rate on its
+ * very first getinfo() poll (log 64: 44100 Hz before settling to 48000 Hz), which
+ * triggers a spurious resampler rebuild and TLS reconnect.  Require the same rate
+ * to be seen on 2 consecutive polls (~1 s at the 500 ms listen timeout) before
+ * rebuilding.  Cleared on every station change so a fresh stream starts clean. */
+static int s_fmt_pending_rate  = -1;
+static int s_fmt_pending_ch    = -1;
+static int s_fmt_pending_count =  0;
+#define FMT_DEBOUNCE_POLLS 2
+
 /* Restart streaming on a (possibly new) URL, clearing the format watcher first so
  * the resampler is reconfigured for the new stream. ALL station-change / restart
  * paths must go through this rather than calling pipeline_change_station directly,
  * otherwise a same-sample-rate transition would leave the resampler misconfigured. */
 static esp_err_t restart_pipeline_station(const char *url)
 {
-    s_fmt_logged_rate = -1;
-    s_fmt_logged_ch   = -1;
+    s_fmt_logged_rate   = -1;
+    s_fmt_logged_ch     = -1;
+    s_fmt_pending_rate  = -1;
+    s_fmt_pending_ch    = -1;
+    s_fmt_pending_count =  0;
     return pipeline_change_station(url);
 }
 
@@ -110,6 +123,28 @@ static void do_switch_to_station(int idx)
     ESP_LOGI(TAG, "Station switch took %" PRId64 " ms", (esp_timer_get_time() - t0) / 1000);
 }
 #endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
+
+/* Advance s_current_station to the next station after a permanent failure on the
+ * current one (repeated stream errors or repeated stalls).  Centralises the
+ * advance so every failure path behaves identically AND keeps the Phase-D
+ * rotation cursor in sync: the rotation timer owns s_rotation_next_idx and runs a
+ * one-shot sweep independent of these resilience advances, so without this sync a
+ * later timer tick could re-issue a stale index and jump back onto a station we
+ * already moved past (Gemini review, PR #46). */
+static void advance_to_next_station(void)
+{
+    s_station_error_count = 0;
+    s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+    /* Keep the rotation timer's next index ahead of where we just landed so its
+     * sweep resumes AFTER the current station rather than replaying an earlier
+     * one.  Guarded against moving backward so a wrap-around advance (last -> 0)
+     * does not restart a sweep that has already completed. */
+    if (s_rotation_next_idx <= s_current_station) {
+        s_rotation_next_idx = s_current_station + 1;
+    }
+#endif
+}
 
 /* Pipeline event loop — handles all ADF element/pipeline events.
  * Station rotation (Phase D) is also driven from here to avoid racing with
@@ -166,18 +201,34 @@ static void run_event_loop(void)
                     if (ai.sample_rates > 0 && ai.channels > 0 &&
                         (ai.sample_rates != s_fmt_logged_rate ||
                          ai.channels    != s_fmt_logged_ch)) {
-                        s_fmt_logged_rate = ai.sample_rates;
-                        s_fmt_logged_ch   = ai.channels;
-                        ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
-                                 ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
-                        /* Push the decoder's real output rate to the resampler.
-                         * rsp_filter cannot learn it on its own (elements only
-                         * exchange raw PCM via ring buffers), so without this the
-                         * resampler stays at its 44100 Hz default and 1:1 passes
-                         * 48000 Hz AAC through — the very mismatch this stage is
-                         * meant to remove.  This polling watcher is the reliable
-                         * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
-                        pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
+                        /* Debounce: the AAC decoder's first getinfo() often reports
+                         * a transient rate (e.g. 44100 Hz) before settling on the
+                         * real one (48000 Hz).  Acting on the first poll triggers a
+                         * spurious resampler rebuild + TLS reconnect (log 64).
+                         * Require FMT_DEBOUNCE_POLLS consecutive polls at the same
+                         * rate before pushing to the resampler. */
+                        if (ai.sample_rates == s_fmt_pending_rate &&
+                            ai.channels     == s_fmt_pending_ch) {
+                            s_fmt_pending_count++;
+                        } else {
+                            s_fmt_pending_rate  = ai.sample_rates;
+                            s_fmt_pending_ch    = ai.channels;
+                            s_fmt_pending_count = 1;
+                        }
+                        if (s_fmt_pending_count >= FMT_DEBOUNCE_POLLS) {
+                            s_fmt_logged_rate = ai.sample_rates;
+                            s_fmt_logged_ch   = ai.channels;
+                            ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
+                                     ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
+                            /* Push the decoder's real output rate to the resampler.
+                             * rsp_filter cannot learn it on its own (elements only
+                             * exchange raw PCM via ring buffers), so without this the
+                             * resampler stays at its 44100 Hz default and 1:1 passes
+                             * 48000 Hz AAC through — the very mismatch this stage is
+                             * meant to remove.  This polling watcher is the reliable
+                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
+                            pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
+                        }
                     }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {
@@ -187,9 +238,21 @@ static void run_event_loop(void)
                         stall_since_us   = esp_timer_get_time();
                         stall_last_bytes = 0;
                         if (bt_manager_is_a2dp_connected()) {
-                            /* A2DP up but PCM stalled — network or decode deadlock.
-                             * Restart the pipeline to recover the stream. */
-                            ESP_LOGW(TAG, "No PCM for 20 s (A2DP connected) — restarting pipeline");
+                            /* A2DP up but PCM stalled — network stall or broken station.
+                             * Count stalls the same way as element errors: after 3
+                             * consecutive stalls on the same station assume it is
+                             * permanently dead (e.g. decommissioned CDN URL) and advance
+                             * to the next station instead of retrying forever (log 64:
+                             * CBC Akamai hung the rotation indefinitely). */
+                            s_station_error_count++;
+                            if (s_station_error_count >= 3) {
+                                advance_to_next_station();
+                                ESP_LOGW(TAG, "Station stalled 3× — advancing to station %d: %s",
+                                         s_current_station, TEST_STATIONS[s_current_station].name);
+                            } else {
+                                ESP_LOGW(TAG, "No PCM for 20 s (A2DP connected) — restarting pipeline (%d/3)",
+                                         s_station_error_count);
+                            }
                             restart_pipeline_station(TEST_STATIONS[s_current_station].url);
                         } else {
                             /* A2DP link is down — re-page the sink.  bt_manager
@@ -237,8 +300,7 @@ static void run_event_loop(void)
                 if (s_station_error_count >= 3) {
                     /* Permanent failure (e.g. HTTP 4xx, CDN timeout): skip to
                      * next station rather than spinning forever on a dead URL. */
-                    s_station_error_count = 0;
-                    s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+                    advance_to_next_station();
                     ESP_LOGW(TAG, "Station failed 3× — advancing to station %d: %s",
                              s_current_station, TEST_STATIONS[s_current_station].name);
                 } else {
@@ -292,17 +354,26 @@ void app_main(void)
 
     /* BT/WiFi coexistence arbiter — PREFER_BT.
      *
-     * Log 30 (PR #24, BALANCE) was a regression: it reintroduced the BT_L2CAP
-     * is_cong bursts that log 29 (PREFER_BT) had eliminated to zero (20 events
-     * vs 0), while steady-state HTTP throughput stayed pinned at ~12 KB/s —
-     * IDENTICAL to log 29. The coex preference does not move throughput because
-     * throughput is NOT radio-arbitration-limited: it is CPU-bound. The decode
-     * +SBC-encode chain scales linearly with clock (0.56x real-time at 160 MHz
-     * -> 0.84x at 240 MHz), and Core 0 (WiFi + BT controller + Bluedroid SBC
-     * encode + coex) is the saturated resource. BALANCE gave WiFi more Core-0
-     * airtime, which only crowded out BT's SBC path -> congestion returned with
-     * no throughput benefit. PREFER_BT keeps WiFi's Core-0 burden low (zero
-     * congestion in log 29) while we attack the actual CPU ceiling separately.
+     * History: log 30 (PR #24, BALANCE) was a regression vs log 29 (PREFER_BT) —
+     * it reintroduced BT_L2CAP is_cong bursts (20 events vs 0) with no throughput
+     * gain, so PREFER_BT was kept.  At the time this was attributed to Core 0
+     * (WiFi + BT controller + Bluedroid SBC encode + coex) being the saturated
+     * resource capping the decode+encode chain below real-time.
+     *
+     * UPDATE (log 64, after the PSRAM memory moves): Core 0 is no longer
+     * saturated.  Moving the Bluedroid host (BT_ALLOCATION_FROM_SPIRAM_FIRST) and
+     * WiFi/LWIP buffers (SPIRAM_TRY_ALLOCATE_WIFI_LWIP) to PSRAM lifted internal
+     * DRAM from ~54 KB to 121 KB free pre-pipeline and, by relieving the
+     * near-exhausted-heap thrash, dropped Core-0 load: IDLE0 8% -> 15%, BTC_TASK
+     * 20% -> 12%, btController 13% -> 10%.  Steady-state francemusique AAC then
+     * ran ~20 s with ZERO underflows; the 9 is_cong events are sporadic and
+     * recover without dropouts.  The remaining audible glitches are station-change
+     * / resampler-rebuild transients, not a steady-state CPU/throughput wall.
+     *
+     * PREFER_BT is KEPT as cheap insurance — there is headroom now (IDLE0 15%,
+     * IDLE1 42%) but it is not large, and PREFER_BT cost nothing.  It is no longer
+     * load-bearing against a CPU ceiling; that ceiling is no longer the binding
+     * constraint.
      *
      * Must be called after bt_manager_init() so the BT controller is registered
      * with the coexistence framework before the preference takes effect. */

@@ -98,17 +98,18 @@ static audio_element_handle_t create_http_stream(void)
     cfg.task_prio         = 23;
     /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
      *
-     * Log 32 CPU table: Core 0 runs at 92% busy (IDLE0 = 8%). The load
-     * breakdown is BTC_TASK 20% + btController 13% + WiFi 13% + BTU_TASK 9%
-     * + hciT 3% = 58% for BT/WiFi, plus http 18% competing on the same core.
-     * Core 1 runs at 37% busy (dec 34%, IDLE1 63%), so it has ample headroom.
+     * Log 32 CPU table (pre-PSRAM): Core 0 ran at 92% busy (IDLE0 = 8%) —
+     * BTC_TASK 20% + btController 13% + WiFi 13% + BTU_TASK 9% + hciT 3% = 58%
+     * for BT/WiFi, plus http 18% competing on the same core.  Pinning http to
+     * Core 1 moved that ~18% off Core 0, leaving more for the BT SBC-encode path
+     * (the source of the L2CAP is_cong bursts).  http and dec share Core 1 in
+     * natural turn: http fills the ring buffer, dec drains it, so they alternate
+     * rather than compete.
      *
-     * Pinning http to Core 1 moves ~18% off Core 0. That headroom goes to
-     * BTC_TASK / btController, which need it to encode SBC frames on time —
-     * the root cause of the L2CAP is_cong bursts that throttle throughput
-     * below real-time. http and dec share Core 1 in natural turn: http writes
-     * to the ring buffer, dec drains it, so they mostly alternate rather than
-     * compete. */
+     * Post-PSRAM (log 64): Core 0 is no longer saturated (IDLE0 15%, BTC_TASK
+     * down to 12%), so this pinning is no longer load-bearing — but it is still
+     * correct (Core 1 has 42% idle, and keeping the I/O task off the radio core
+     * costs nothing).  Kept as-is. */
     cfg.task_core         = 1;
     /* Compressed-side jitter buffer. 64KB ≈ 4s of 128kbps MP3. Lives in PSRAM
      * (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), so it costs no internal
@@ -127,7 +128,9 @@ static audio_element_handle_t create_mp3_decoder(void)
      * the MP3 decode competed with all of that and could only sustain ~108 KB/s
      * PCM (log 26), below the 192 KB/s real-time rate → choppy. Core 1 only runs
      * the app/monitor tasks, so the decoder gets a near-dedicated core; combined
-     * with the 240 MHz bump this clears the real-time decode budget with margin. */
+     * with the 240 MHz bump this clears the real-time decode budget with margin.
+     * Confirmed in log 64: decoder ~24% on Core 1 (IDLE1 42%) with steady-state
+     * playback underflow-free, so the decode budget is met with headroom. */
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
     cfg.out_rb_size       = DECODER_TO_RSP_RB_SIZE;  /* hop to rsp_filter; jitter buffer is on rsp_filter.out_rb */
