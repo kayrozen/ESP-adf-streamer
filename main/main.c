@@ -44,6 +44,26 @@ static int s_current_station = 0;
  * permanent failures like HTTP 4xx or CDN hangs (BBC 410, HLS .ts timeout). */
 static int s_station_error_count = 0;
 
+/* Decoded-PCM format watcher state (see run_event_loop). Tracks the last decoder
+ * format seen so the resampler is re-armed only when the rate/channels change.
+ * File-scope so restart_pipeline_station() can clear it: a station change resets
+ * the pipeline elements (reverting the resampler toward its 44100 Hz default), so
+ * the watcher must forget the previous format and re-push — even when the new
+ * station shares the same sample rate (e.g. 48000 Hz AAC -> 48000 Hz AAC). */
+static int s_fmt_logged_rate = -1;
+static int s_fmt_logged_ch   = -1;
+
+/* Restart streaming on a (possibly new) URL, clearing the format watcher first so
+ * the resampler is reconfigured for the new stream. ALL station-change / restart
+ * paths must go through this rather than calling pipeline_change_station directly,
+ * otherwise a same-sample-rate transition would leave the resampler misconfigured. */
+static esp_err_t restart_pipeline_station(const char *url)
+{
+    s_fmt_logged_rate = -1;
+    s_fmt_logged_ch   = -1;
+    return pipeline_change_station(url);
+}
+
 /* Phase D — hot station change, keeps A2DP alive.
  * Must be called from the event loop thread to avoid racing with queued events. */
 #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
@@ -83,7 +103,7 @@ static void do_switch_to_station(int idx)
     ESP_LOGI(TAG, "Switching to station %d: %s", idx, TEST_STATIONS[idx].name);
     s_station_error_count = 0;
     int64_t t0 = esp_timer_get_time();
-    esp_err_t ret = pipeline_change_station(TEST_STATIONS[idx].url);
+    esp_err_t ret = restart_pipeline_station(TEST_STATIONS[idx].url);
     if (ret == ESP_OK) {
         s_current_station = idx;
     }
@@ -114,9 +134,8 @@ static void run_event_loop(void)
      * format. Corrupt audio with clean delivery (choppy / white noise but no
      * underflows) is classically a sample-rate or channel mismatch handed to
      * the SBC encoder, so log the format directly from the decoder whenever it
-     * changes. */
-    int  fmt_logged_rate = -1;
-    int  fmt_logged_ch   = -1;
+     * changes. State lives at file scope (s_fmt_logged_*) so it can be cleared
+     * on every station change via restart_pipeline_station(). */
 
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
@@ -144,13 +163,21 @@ static void run_event_loop(void)
                 if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
                     audio_element_info_t ai = {0};
                     audio_element_getinfo(dec_el, &ai);
-                    if (ai.sample_rates != 0 &&
-                        (ai.sample_rates != fmt_logged_rate ||
-                         ai.channels    != fmt_logged_ch)) {
-                        fmt_logged_rate = ai.sample_rates;
-                        fmt_logged_ch   = ai.channels;
+                    if (ai.sample_rates > 0 && ai.channels > 0 &&
+                        (ai.sample_rates != s_fmt_logged_rate ||
+                         ai.channels    != s_fmt_logged_ch)) {
+                        s_fmt_logged_rate = ai.sample_rates;
+                        s_fmt_logged_ch   = ai.channels;
                         ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
                                  ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
+                        /* Push the decoder's real output rate to the resampler.
+                         * rsp_filter cannot learn it on its own (elements only
+                         * exchange raw PCM via ring buffers), so without this the
+                         * resampler stays at its 44100 Hz default and 1:1 passes
+                         * 48000 Hz AAC through — the very mismatch this stage is
+                         * meant to remove.  This polling watcher is the reliable
+                         * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
+                        pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
                     }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {
@@ -163,7 +190,7 @@ static void run_event_loop(void)
                             /* A2DP up but PCM stalled — network or decode deadlock.
                              * Restart the pipeline to recover the stream. */
                             ESP_LOGW(TAG, "No PCM for 20 s (A2DP connected) — restarting pipeline");
-                            pipeline_change_station(TEST_STATIONS[s_current_station].url);
+                            restart_pipeline_station(TEST_STATIONS[s_current_station].url);
                         } else {
                             /* A2DP link is down — re-page the sink.  bt_manager
                              * owns the connection lifecycle, so drive a single
@@ -202,7 +229,7 @@ static void run_event_loop(void)
             if (st == AEL_STATUS_STATE_FINISHED) {
                 s_station_error_count = 0;
                 ESP_LOGI(TAG, "Stream finished — restarting same station");
-                pipeline_change_station(TEST_STATIONS[s_current_station].url);
+                restart_pipeline_station(TEST_STATIONS[s_current_station].url);
             } else if (st == AEL_STATUS_ERROR_OPEN   ||
                        st == AEL_STATUS_ERROR_INPUT  ||
                        st == AEL_STATUS_ERROR_PROCESS) {
@@ -219,7 +246,7 @@ static void run_event_loop(void)
                              st, s_station_error_count);
                     vTaskDelay(pdMS_TO_TICKS(3000));
                 }
-                pipeline_change_station(TEST_STATIONS[s_current_station].url);
+                restart_pipeline_station(TEST_STATIONS[s_current_station].url);
             }
         }
     }

@@ -9,6 +9,7 @@
 #include "http_stream.h"
 #include "mp3_decoder.h"
 #include "aac_decoder.h"
+#include "filter_resample.h"
 #include "esp_peripherals.h"  /* must precede a2dp_stream.h (defines esp_periph_handle_t) */
 #include "a2dp_stream.h"
 #include "bt_manager.h"
@@ -16,37 +17,28 @@
 
 static const char *TAG = "pipeline";
 
-/* PCM-side jitter buffer feeding a2dp_stream — THE buffer that rides out input
- * delivery stalls. The decoder eagerly fills it until full then blocks, so it
- * stays near-full and the BT sink drains it in real time. Its depth sets how
- * long a no-data gap on the source the audio can survive without a dropout.
+/* PCM-side jitter buffer — sits on rsp_filter.out_rb (44100 Hz stereo 16-bit,
+ * 176.4 KB/s) feeding a2dp_stream.  THE buffer that rides out HTTPS delivery
+ * stalls: when the TLS socket goes quiet the decoder stalls, the rsp_filter
+ * stalls, and a2dp_stream drains from this reserve.
  *
- *   24KB  (original) ≈ 0.13s @ 48kHz/stereo/16-bit (192KB/s) — too short for the
- *                       200-500ms BT/WiFi coexistence stalls (logs 21-23 chop).
- *   256KB (PR pre-D)  ≈ 1.33s — fixed the MP3 baseline (plaintext HTTP, smooth
- *                       server pacing); gap-free in logs 35/36.
- *   512KB (now)       ≈ 2.67s — needed for the HTTPS AAC/HLS streams. Log 47
- *                       (steady AAC from icecast.radiofrance.fr) showed the TLS
- *                       socket delivering NOTHING for 1.38s, 1.35s and 2.08s at
- *                       a time, then bursting 30-57KB/s to catch up. TLS hands
- *                       data over in burstier encrypted records and its per-
- *                       record decrypt adds Core-0 pressure (http 23%, IDLE0 8%
- *                       in the log), so the server<->socket pacing develops
- *                       multi-second gaps the plaintext MP3 path never had. A
- *                       1.38s gap just exceeds the 256KB (1.33s) buffer, draining
- *                       it to a brief dropout every ~12s — the reported AAC chop.
- *                       512KB absorbs the observed 2.08s worst case with margin.
+ *   512KB ≈ 2.9 s @ 44100 Hz/stereo/16-bit (176.4 KB/s) — absorbs the 2.08 s
+ *   worst-case TLS delivery gap observed in log 47 with margin.
  *
- * Lives in PSRAM (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), ~3.5MB free, so
- * it costs no internal DRAM. Only one decoder is alive at a time except a brief
- * hot-swap overlap (2x512KB = 1MB peak), well within PSRAM headroom. Adds ~2.7s
- * startup/seek latency, irrelevant for internet radio. */
+ * Lives in PSRAM (>16 KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold). */
 #define PCM_JITTER_RB_SIZE  (512 * 1024)
+
+/* Intermediate ring buffer between decoder and rsp_filter (PCM at source rate,
+ * either 44100 or 48000 Hz).  Sized for ~0.33 s — enough for the rsp_filter
+ * to drain decoder bursts; the large jitter buffer is downstream of the
+ * resampler on rsp_filter.out_rb, so only a small hop is needed here. */
+#define DECODER_TO_RSP_RB_SIZE  (64 * 1024)
 
 /* Pipeline handles */
 static audio_pipeline_handle_t   s_pipeline     = NULL;
 static audio_element_handle_t    s_http_el      = NULL;
 static audio_element_handle_t    s_decoder_el   = NULL;
+static audio_element_handle_t    s_resample_el  = NULL;
 static audio_element_handle_t    s_a2dp_el      = NULL;
 static audio_event_iface_handle_t s_evt         = NULL;
 
@@ -105,7 +97,7 @@ static audio_element_handle_t create_mp3_decoder(void)
      * with the 240 MHz bump this clears the real-time decode budget with margin. */
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = PCM_JITTER_RB_SIZE;  /* see PCM_JITTER_RB_SIZE note */
+    cfg.out_rb_size       = DECODER_TO_RSP_RB_SIZE;  /* hop to rsp_filter; jitter buffer is on rsp_filter.out_rb */
     return mp3_decoder_init(&cfg);
 }
 
@@ -116,8 +108,62 @@ static audio_element_handle_t create_aac_decoder(void)
      * decode off Core 0, which is saturated by WiFi + BT + coexistence. */
     cfg.task_core         = 1;
     cfg.task_prio         = 23;
-    cfg.out_rb_size       = PCM_JITTER_RB_SIZE;  /* see PCM_JITTER_RB_SIZE note */
+    cfg.out_rb_size       = DECODER_TO_RSP_RB_SIZE;  /* hop to rsp_filter; jitter buffer is on rsp_filter.out_rb */
     return aac_decoder_init(&cfg);
+}
+
+static audio_element_handle_t create_resample_filter(void)
+{
+    /* Normalise all decoded PCM to 44100 Hz stereo 16-bit before the SBC encoder.
+     *
+     * Root cause (log 53): the JBL speaker negotiated SBC at 44100 Hz, but the
+     * AAC streams output 48000 Hz PCM.  The SBC encoder consumed only 44100*2*2 =
+     * 176.4 KB/s while the decoder produced 48000*2*2 = 192.0 KB/s — an 8.8%
+     * surplus that filled the 512 KB ring buffer in ~33 s and caused periodic
+     * decoder stalls (perceived as 1-second drops).  L2CAP is_cong_cback_context
+     * errors in logs 49-53 are the same mismatch on the BT side.
+     *
+     * rsp_filter does NOT learn the upstream rate on its own (ADF elements only
+     * exchange raw PCM through ring buffers), so it is created at 44100 Hz here
+     * and the decoder's real output rate is pushed in at runtime via
+     * pipeline_set_resample_src_info() — see the format watcher in main.c. That
+     * makes it a no-op pass-through for 44100 Hz MP3 and a 48000->44100 Hz
+     * downsample for AAC.
+     *
+     * PCM_JITTER_RB_SIZE (512 KB) is placed here, on the resampler's output ring
+     * buffer (44100 Hz, 176.4 KB/s), giving 2.9 s of reserve for HTTPS delivery
+     * stalls — same headroom as before, but now at the correct sample rate. */
+    rsp_filter_cfg_t cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
+    cfg.src_rate    = 44100;  /* initial; updated at runtime via pipeline_set_resample_src_info() */
+    cfg.src_ch      = 2;
+    cfg.dest_rate   = 44100;  /* fixed to match JBL SBC negotiation */
+    cfg.dest_ch     = 2;
+    cfg.task_core   = 1;
+    cfg.task_prio   = 22;     /* just below decoder (23) */
+    cfg.task_stack  = 6 * 1024;
+    cfg.out_rb_size = PCM_JITTER_RB_SIZE;
+    return rsp_filter_init(&cfg);
+}
+
+esp_err_t pipeline_set_resample_src_info(int rate, int ch)
+{
+    if (!s_resample_el) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (rate <= 0 || ch <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* No caching here: a station change resets the elements (reverting the
+     * resampler toward its default src_rate), so the new rate must be pushed
+     * through unconditionally even when it equals the previous station's rate.
+     * The caller (format watcher in main.c) already throttles redundant polls. */
+    esp_err_t ret = rsp_filter_set_src_info(s_resample_el, rate, ch);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Resampler source set to %d Hz / %d ch -> 44100 Hz / 2 ch", rate, ch);
+    } else {
+        ESP_LOGE(TAG, "rsp_filter_set_src_info(%d,%d) failed: %d", rate, ch, ret);
+    }
+    return ret;
 }
 
 /* Create decoder based on codec type */
@@ -191,15 +237,17 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
      * diagnosing AAC audio corruption. */
     pipeline_codec_t boot_codec = boot_url ? detect_codec_from_url(boot_url)
                                            : PIPELINE_CODEC_MP3;
-    s_http_el     = create_http_stream();
-    s_decoder_el  = create_decoder(boot_codec);
-    s_a2dp_el     = create_a2dp_stream();
+    s_http_el      = create_http_stream();
+    s_decoder_el   = create_decoder(boot_codec);
+    s_resample_el  = create_resample_filter();
+    s_a2dp_el      = create_a2dp_stream();
 
-    if (!s_http_el || !s_decoder_el || !s_a2dp_el) {
+    if (!s_http_el || !s_decoder_el || !s_resample_el || !s_a2dp_el) {
         ESP_LOGE(TAG, "Failed to create one or more pipeline elements");
-        if (s_http_el)    audio_element_deinit(s_http_el);
-        if (s_decoder_el) audio_element_deinit(s_decoder_el);
-        if (s_a2dp_el)    audio_element_deinit(s_a2dp_el);
+        if (s_http_el)     { audio_element_deinit(s_http_el);     s_http_el = NULL; }
+        if (s_decoder_el)  { audio_element_deinit(s_decoder_el);  s_decoder_el = NULL; }
+        if (s_resample_el) { audio_element_deinit(s_resample_el); s_resample_el = NULL; }
+        if (s_a2dp_el)     { audio_element_deinit(s_a2dp_el);     s_a2dp_el = NULL; }
         audio_pipeline_deinit(s_pipeline);
         s_pipeline = NULL;
         return ESP_FAIL;
@@ -209,11 +257,13 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
     if (ret != ESP_OK) { ESP_LOGE(TAG, "Register http failed: %d", ret); goto err_cleanup; }
     ret = audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
     if (ret != ESP_OK) { ESP_LOGE(TAG, "Register dec failed: %d", ret); goto err_cleanup; }
+    ret = audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "Register rsp failed: %d", ret); goto err_cleanup; }
     ret = audio_pipeline_register(s_pipeline, s_a2dp_el, "bt");
     if (ret != ESP_OK) { ESP_LOGE(TAG, "Register bt failed: %d", ret); goto err_cleanup; }
 
-    const char *link_tag[] = {"http", "dec", "bt"};
-    ret = audio_pipeline_link(s_pipeline, link_tag, 3);
+    const char *link_tag[] = {"http", "dec", "rsp", "bt"};
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "Pipeline link failed: %d", ret); goto err_cleanup; }
 
     /* Event interface: listen to pipeline + element events */
@@ -243,13 +293,15 @@ err_cleanup:
     if (s_pipeline) {
         audio_pipeline_unregister(s_pipeline, s_http_el);
         audio_pipeline_unregister(s_pipeline, s_decoder_el);
+        audio_pipeline_unregister(s_pipeline, s_resample_el);
         audio_pipeline_unregister(s_pipeline, s_a2dp_el);
         audio_pipeline_deinit(s_pipeline);
         s_pipeline = NULL;
     }
-    if (s_http_el)    { audio_element_deinit(s_http_el);    s_http_el = NULL; }
-    if (s_decoder_el) { audio_element_deinit(s_decoder_el); s_decoder_el = NULL; }
-    if (s_a2dp_el)    { audio_element_deinit(s_a2dp_el);    s_a2dp_el = NULL; }
+    if (s_http_el)     { audio_element_deinit(s_http_el);     s_http_el = NULL; }
+    if (s_decoder_el)  { audio_element_deinit(s_decoder_el);  s_decoder_el = NULL; }
+    if (s_resample_el) { audio_element_deinit(s_resample_el); s_resample_el = NULL; }
+    if (s_a2dp_el)     { audio_element_deinit(s_a2dp_el);     s_a2dp_el = NULL; }
     return ESP_FAIL;
 }
 
@@ -310,23 +362,23 @@ static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec)
         /* Rollback: restore old decoder (still valid, not deinit'd) */
         s_decoder_el = old_decoder;
         audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
-        const char *link_tag[] = {"http", "dec", "bt"};
-        audio_pipeline_link(s_pipeline, link_tag, 3);
+        const char *rb_link_tag[] = {"http", "dec", "rsp", "bt"};
+        audio_pipeline_link(s_pipeline, rb_link_tag, 4);
         audio_pipeline_run(s_pipeline);
         /* Now safe to deinit failed new decoder */
         audio_element_deinit(new_decoder);
         return ret;
     }
 
-    const char *link_tag[] = {"http", "dec", "bt"};
-    ret = audio_pipeline_link(s_pipeline, link_tag, 3);
+    const char *link_tag[] = {"http", "dec", "rsp", "bt"};
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to relink pipeline after decoder swap: %d", ret);
         /* Rollback: restore old decoder (still valid, not deinit'd) */
         s_decoder_el = old_decoder;
         audio_pipeline_unregister(s_pipeline, new_decoder);
         audio_pipeline_register(s_pipeline, s_decoder_el, "dec");
-        audio_pipeline_link(s_pipeline, link_tag, 3);
+        audio_pipeline_link(s_pipeline, link_tag, 4);
         audio_pipeline_run(s_pipeline);
         /* Deinit failed new decoder only — old decoder was restored, not replaced */
         audio_element_deinit(new_decoder);
@@ -394,18 +446,21 @@ void pipeline_deinit(void)
     audio_pipeline_terminate(s_pipeline);
     audio_pipeline_unregister(s_pipeline, s_http_el);
     audio_pipeline_unregister(s_pipeline, s_decoder_el);
+    audio_pipeline_unregister(s_pipeline, s_resample_el);
     audio_pipeline_unregister(s_pipeline, s_a2dp_el);
     audio_pipeline_deinit(s_pipeline);
     audio_element_deinit(s_http_el);
     audio_element_deinit(s_decoder_el);
+    audio_element_deinit(s_resample_el);
     audio_element_deinit(s_a2dp_el);
     audio_event_iface_destroy(s_evt);
 
-    s_pipeline = NULL;
-    s_http_el = NULL;
-    s_decoder_el = NULL;
-    s_a2dp_el = NULL;
-    s_evt = NULL;
+    s_pipeline    = NULL;
+    s_http_el     = NULL;
+    s_decoder_el  = NULL;
+    s_resample_el = NULL;
+    s_a2dp_el     = NULL;
+    s_evt         = NULL;
 
     if (s_pipeline_mutex) {
         vSemaphoreDelete(s_pipeline_mutex);
