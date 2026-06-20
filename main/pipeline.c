@@ -79,12 +79,12 @@ static audio_element_handle_t create_http_stream(void)
     http_stream_cfg_t cfg = HTTP_STREAM_CFG_DEFAULT();
     cfg.type              = AUDIO_STREAM_READER;
     cfg.enable_playlist_parser = true;   /* HLS playlist support */
-    /* 8 KB covers mbedTLS TLS 1.2 RSA call frames (ASN.1 parse + key exchange).  TLS I/O buffers
-     * are in PSRAM via MBEDTLS_EXTERNAL_MEM_ALLOC=y, so only call frames land here.  Keeping this
-     * in sync with CONFIG_HTTP_STREAM_TASK_STACK_SIZE frees 4 KB of internal DRAM that
-     * esp_timer_create (MALLOC_CAP_INTERNAL) needs during the handshake.  CANARY catches overflow. */
-    cfg.task_stack        = 8 * 1024;
-    /* Move THIS stack (8 KB) to PSRAM.  The http task is I/O-bound (it blocks on the
+    /* Stack size is owned by CONFIG_HTTP_STREAM_TASK_STACK_SIZE (8192 in sdkconfig.defaults),
+     * which HTTP_STREAM_CFG_DEFAULT() already applies to cfg.task_stack — no override here so
+     * the two can't drift.  8 KB covers mbedTLS TLS 1.2 RSA call frames (ASN.1 parse + key
+     * exchange); TLS I/O buffers live in PSRAM via MBEDTLS_EXTERNAL_MEM_ALLOC=y, so only call
+     * frames land on this stack, and CANARY catches any genuine overflow. */
+    /* Move THIS stack to PSRAM.  The http task is I/O-bound (it blocks on the
      * socket and mbedTLS), so a 40 MHz cache-backed PSRAM stack costs negligible
      * throughput, while freeing 8 KB of scarce internal DRAM — the fix for the
      * "wifi:m f null" + NULL-queue-assert exhaustion in log 61.  Requires
