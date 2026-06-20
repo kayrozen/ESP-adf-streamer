@@ -83,14 +83,22 @@ static esp_err_t restart_pipeline_station(const char *url)
 /* Pending station index set by timer callback, consumed in event loop thread */
 static volatile int s_next_station_request = -1;
 static esp_timer_handle_t s_rotation_timer  = NULL;
+/* s_rotation_next_idx is shared between the esp_timer task (rotation_timer_cb,
+ * priority 22) and the main event loop task (advance_to_next_station, priority
+ * 1).  Both run on Core 0 so they can't run in parallel, but the timer CAN
+ * preempt the event loop mid-update.  Use __atomic_* for both the read-modify-
+ * write in the callback and the conditional store in advance_to_next_station. */
 static int s_rotation_next_idx = 1;  /* skip idx 0 — already playing at start */
 
 static void rotation_timer_cb(void *arg)
 {
-    if (s_rotation_next_idx < NUM_TEST_STATIONS) {
-        s_next_station_request = s_rotation_next_idx++;
+    int cur = __atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST);
+    if (cur < NUM_TEST_STATIONS) {
+        /* fetch_add returns old value and increments atomically — equivalent to
+         * s_next_station_request = s_rotation_next_idx++ but race-free. */
+        s_next_station_request = __atomic_fetch_add(&s_rotation_next_idx, 1, __ATOMIC_SEQ_CST);
     }
-    if (s_rotation_next_idx >= NUM_TEST_STATIONS) {
+    if (__atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST) >= NUM_TEST_STATIONS) {
         esp_timer_stop(s_rotation_timer);
     }
 }
@@ -139,9 +147,12 @@ static void advance_to_next_station(void)
     /* Keep the rotation timer's next index ahead of where we just landed so its
      * sweep resumes AFTER the current station rather than replaying an earlier
      * one.  Guarded against moving backward so a wrap-around advance (last -> 0)
-     * does not restart a sweep that has already completed. */
-    if (s_rotation_next_idx <= s_current_station) {
-        s_rotation_next_idx = s_current_station + 1;
+     * does not restart a sweep that has already completed.
+     * Atomic load/store: the timer callback can preempt this task between the
+     * comparison and the store, corrupting the index. */
+    int next = __atomic_load_n(&s_rotation_next_idx, __ATOMIC_SEQ_CST);
+    if (next <= s_current_station) {
+        __atomic_store_n(&s_rotation_next_idx, s_current_station + 1, __ATOMIC_SEQ_CST);
     }
 #endif
 }
@@ -216,8 +227,6 @@ static void run_event_loop(void)
                             s_fmt_pending_count = 1;
                         }
                         if (s_fmt_pending_count >= FMT_DEBOUNCE_POLLS) {
-                            s_fmt_logged_rate = ai.sample_rates;
-                            s_fmt_logged_ch   = ai.channels;
                             ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
                                      ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
                             /* Push the decoder's real output rate to the resampler.
@@ -226,8 +235,16 @@ static void run_event_loop(void)
                              * resampler stays at its 44100 Hz default and 1:1 passes
                              * 48000 Hz AAC through — the very mismatch this stage is
                              * meant to remove.  This polling watcher is the reliable
-                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap. */
-                            pipeline_set_resample_src_info(ai.sample_rates, ai.channels);
+                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap.
+                             *
+                             * Update tracked state ONLY on success: if the call fails
+                             * (e.g. pipeline mutex timeout), leaving the logged vars
+                             * unchanged lets the next poll retry rather than silently
+                             * locking in a misconfigured resampler for the stream. */
+                            if (pipeline_set_resample_src_info(ai.sample_rates, ai.channels) == ESP_OK) {
+                                s_fmt_logged_rate = ai.sample_rates;
+                                s_fmt_logged_ch   = ai.channels;
+                            }
                         }
                     }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
