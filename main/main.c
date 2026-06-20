@@ -23,13 +23,18 @@ static const char *TAG = "app_main";
 
 /* Phase D — station rotation table */
 static const station_t TEST_STATIONS[NUM_TEST_STATIONS] = {
-    { "MP3 Icecast",      STATION_MP3_URL        },
-    { "AAC Icecast",      STATION_AAC_URL        },
-    { "HLS mono-bitrate", STATION_HLS_URL        },
-    { "HLS multi-bitrate",STATION_HLS_MULTI_URL  },
+    { "MP3 Icecast",        STATION_MP3_URL        },
+    { "AAC Icecast",        STATION_AAC_URL        },
+    { "HLS mono-bitrate",   STATION_HLS_URL        },
+    { "France Culture AAC", STATION_HLS_MULTI_URL  },
 };
 
 static int s_current_station = 0;
+
+/* Consecutive error count for the current station.
+ * After 3 errors we skip to the next rather than looping forever — needed for
+ * permanent failures like HTTP 4xx or CDN hangs (BBC 410, HLS .ts timeout). */
+static int s_station_error_count = 0;
 
 /* Phase D — hot station change, keeps A2DP alive.
  * Must be called from the event loop thread to avoid racing with queued events. */
@@ -68,6 +73,7 @@ static void do_switch_to_station(int idx)
 {
     if (idx < 0 || idx >= NUM_TEST_STATIONS) return;
     ESP_LOGI(TAG, "Switching to station %d: %s", idx, TEST_STATIONS[idx].name);
+    s_station_error_count = 0;
     int64_t t0 = esp_timer_get_time();
     esp_err_t ret = pipeline_change_station(TEST_STATIONS[idx].url);
     if (ret == ESP_OK) {
@@ -168,13 +174,25 @@ static void run_event_loop(void)
             msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
             audio_element_status_t st = (audio_element_status_t)(int)msg.data;
             if (st == AEL_STATUS_STATE_FINISHED) {
+                s_station_error_count = 0;
                 ESP_LOGI(TAG, "Stream finished — restarting same station");
                 pipeline_change_station(TEST_STATIONS[s_current_station].url);
             } else if (st == AEL_STATUS_ERROR_OPEN   ||
                        st == AEL_STATUS_ERROR_INPUT  ||
                        st == AEL_STATUS_ERROR_PROCESS) {
-                ESP_LOGE(TAG, "Stream error (status=%d) — retrying in 3s", st);
-                vTaskDelay(pdMS_TO_TICKS(3000));
+                s_station_error_count++;
+                if (s_station_error_count >= 3) {
+                    /* Permanent failure (e.g. HTTP 4xx, CDN timeout): skip to
+                     * next station rather than spinning forever on a dead URL. */
+                    s_station_error_count = 0;
+                    s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+                    ESP_LOGW(TAG, "Station failed 3× — advancing to station %d: %s",
+                             s_current_station, TEST_STATIONS[s_current_station].name);
+                } else {
+                    ESP_LOGE(TAG, "Stream error (status=%d) — retrying in 3 s (%d/3)",
+                             st, s_station_error_count);
+                    vTaskDelay(pdMS_TO_TICKS(3000));
+                }
                 pipeline_change_station(TEST_STATIONS[s_current_station].url);
             }
         }
