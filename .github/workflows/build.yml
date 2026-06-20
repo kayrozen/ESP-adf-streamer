@@ -62,14 +62,23 @@ jobs:
             esp-adf-${{ env.ADF_VERSION }}-
 
       - name: Clone ESP-ADF
-        if: steps.cache-adf.outputs.cache-hit != 'true'
+        # Guard on the actual directory, not steps.cache-adf.outputs.cache-hit.
+        # cache-hit is 'true' ONLY on an exact key match; a restore-key (prefix)
+        # match still populates $ADF_PATH but reports cache-hit=false, which made
+        # this step try to clone into a non-empty dir ("destination path already
+        # exists") whenever build.yml changed and bumped the cache key. The restored
+        # tree is a valid v2.8 ADF (same ADF_VERSION), so reuse it when present.
         run: |
-          git clone --depth=1 --branch "$ADF_VERSION" \
-            https://github.com/espressif/esp-adf.git "$ADF_PATH"
-          cd "$ADF_PATH"
-          # Init only the components/ subtree — the container already has IDF,
-          # so we skip ADF's bundled esp-idf submodule (saves ~500MB and 3min).
-          git submodule update --init --recursive --depth=1 -- components/
+          if [ -d "$ADF_PATH/components" ]; then
+            echo "ESP-ADF already present (cache restore) — skipping clone."
+          else
+            git clone --depth=1 --branch "$ADF_VERSION" \
+              https://github.com/espressif/esp-adf.git "$ADF_PATH"
+            cd "$ADF_PATH"
+            # Init only the components/ subtree — the container already has IDF,
+            # so we skip ADF's bundled esp-idf submodule (saves ~500MB and 3min).
+            git submodule update --init --recursive --depth=1 -- components/
+          fi
 
       - name: Point ADF at the container's IDF
         # ADF expects $ADF_PATH/esp-idf to exist; symlink it to the container's IDF
