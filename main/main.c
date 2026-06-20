@@ -366,17 +366,15 @@ void app_main(void)
      * DRAM from ~54 KB to 121 KB free pre-pipeline and, by relieving the
      * near-exhausted-heap thrash, dropped Core-0 load: IDLE0 8% -> 15%, BTC_TASK
      * 20% -> 12%, btController 13% -> 10%.  Steady-state francemusique AAC then
-     * ran ~20 s with ZERO underflows; the 9 is_cong events are sporadic and
-     * recover without dropouts.  The remaining audible glitches are station-change
-     * / resampler-rebuild transients, not a steady-state CPU/throughput wall.
+     * ran ~20 s with ZERO underflows.
      *
-     * PREFER_BT is KEPT as cheap insurance — there is headroom now (IDLE0 15%,
-     * IDLE1 42%) but it is not large, and PREFER_BT cost nothing.  It is no longer
-     * load-bearing against a CPU ceiling; that ceiling is no longer the binding
-     * constraint.
-     *
-     * Must be called after bt_manager_init() so the BT controller is registered
-     * with the coexistence framework before the preference takes effect. */
+     * UPDATE (log 65, after format-watcher debounce fix): remaining is_cong events
+     * are a STARTUP BURST phenomenon — 17 events concentrated in t=12-17s (the
+     * first 5s of streaming after the TLS handshake) then ZERO for the rest of the
+     * session.  Root cause: BT's L2CAP ACL buffer fills faster than the BT radio
+     * can drain it while WiFi wakes every 102ms (PS_MIN_MODEM li=1).  Addressed by
+     * wifi_manager.c: WIFI_PS_MAX_MODEM + listen_interval=3 (307ms sleep windows),
+     * giving BT ~97% airtime.  PREFER_BT is kept as a secondary layer. */
     ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d (balance stays)", ret);

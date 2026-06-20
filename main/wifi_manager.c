@@ -123,16 +123,29 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
 
-    /* Wake on every beacon (li=1, ~102ms) instead of the default li=3 (307ms).
-     * With BT/WiFi coexistence and PS_MIN_MODEM, WiFi sleeps between beacons
-     * and the coexistence arbiter gives BT the radio during sleep windows.
-     * li=1 lets WiFi burst at ~28 KB/s (2×MSS/102ms) — well above the 16 KB/s
-     * needed for 128kbps — while sleeping ~70% of the time so BT A2DP gets
-     * enough radio time to sustain 192 KB/s PCM (48kHz/stereo/16-bit).
-     * li=3 (307ms) was the old default and was replaced by PS_NONE in PR #19,
-     * but PS_NONE keeps WiFi awake continuously, starving BT to ~60% airtime
-     * and dropping A2DP throughput below real-time regardless of buffer size. */
-    wifi_cfg.sta.listen_interval = 1;
+    /* WiFi listen interval for MAX_MODEM power save.
+     *
+     * With WIFI_PS_MAX_MODEM and li=N, the station sleeps for N × DTIM periods
+     * before waking to check for buffered data.  Our AP's DTIM period = 1 (every
+     * beacon, ~102ms), so li=3 → 307ms sleep windows.
+     *
+     * During each 307ms sleep BT has near-exclusive 2.4 GHz access.  At 192kbps
+     * stream rate we need 24KB/s = 7.4KB per 307ms window.  WiFi downloads that
+     * in ~7ms at ~1MB/s burst, then sleeps again → BT gets ~97% of airtime.
+     * This directly eliminates the startup L2CAP is_cong bursts (log 65: 17
+     * events in the first 5s of francemusique, causing audible choppiness).
+     *
+     * Our ring buffers absorb the bursty WiFi pattern:
+     *   HTTP ring buf   64KB  = 2.7s @ 192kbps  (64000/24000)
+     *   PCM jitter buf 512KB  = 2.9s @ 176KB/s  (512000/176400)
+     *
+     * History: li=3 with an earlier codebase (PR #19) was replaced by PS_NONE
+     * which kept WiFi awake continuously and starved BT to ~60% A2DP throughput
+     * (log 24).  That was then tuned to li=1 + PS_MIN_MODEM.  With PS_MIN_MODEM,
+     * the listen_interval field is IGNORED — MIN_MODEM always wakes at every DTIM
+     * regardless, so li=1 vs li=3 made no difference.  The buffers are now much
+     * larger (PSRAM), so li=3 + MAX_MODEM is safe and gives far more BT airtime. */
+    wifi_cfg.sta.listen_interval = 3;
 
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
@@ -146,18 +159,18 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         return ret;
     }
 
-    /* Keep modem sleep (PS_MIN_MODEM) so WiFi yields the radio to BT between
-     * beacon wakes. PS_NONE (tried in PR #19) keeps WiFi awake 100% of the
-     * time; the coexistence arbiter then starves BT A2DP to ~60% throughput
-     * (log 24 steady-state: 9.5 KB/s HTTP in = 114 KB/s PCM out vs 192 KB/s
-     * needed, causing choppy audio despite large PSRAM jitter buffers).
-     * With PS_MIN_MODEM + li=1 (102ms wakes), WiFi bursts at ~28 KB/s when
-     * awake but sleeps ~70% of the time, leaving BT enough airtime for
-     * glitch-free A2DP. PS_MIN_MODEM is IDF default; this call is explicit
-     * for documentation and in case of later sdkconfig changes. */
-    ret = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    /* MAX_MODEM power save: WiFi sleeps for listen_interval (3) × DTIM periods
+     * between wakes.  Combined with li=3 above, this gives ~307ms sleep windows
+     * where BT has near-exclusive 2.4GHz access, eliminating the startup L2CAP
+     * is_cong bursts observed in logs 64/65.
+     *
+     * PS_NONE (tried in PR #19) starved BT to ~60% airtime (log 24).
+     * PS_MIN_MODEM (used previously) ignores listen_interval entirely — it always
+     * wakes every DTIM (~102ms) — so li=1 and li=3 were equivalent under it.
+     * PS_MAX_MODEM is required for listen_interval > 1 to take effect. */
+    ret = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_set_ps(MIN_MODEM) failed: %d", ret);
+        ESP_LOGW(TAG, "esp_wifi_set_ps(MAX_MODEM) failed: %d", ret);
     }
 
     ESP_LOGI(TAG, "Connecting to SSID: %s …", ssid);
