@@ -147,7 +147,7 @@ I (monitor): CPU runtime stats:
 
 ## Phase D — station rotation (optional)
 
-Enable in sdkconfig by setting `CONFIG_PROTOTYPE_PHASE_D_ROTATION=y`. The firmware will automatically cycle through all four test stations (MP3 → AAC → HLS mono → HLS multi-bitrate) at 60 s intervals without dropping the Bluetooth connection.
+Enable in sdkconfig by setting `CONFIG_PROTOTYPE_PHASE_D_ROTATION=y` (defined in `main/Kconfig.projbuild`). The firmware will automatically cycle through all four test stations (MP3 → AAC → HLS mono → HLS multi-bitrate) at 30 s intervals without dropping the Bluetooth connection.
 
 Check the log for:
 

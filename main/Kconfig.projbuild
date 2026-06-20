@@ -1,10 +1,10 @@
 menu "Prototype Configuration"
 
     config PROTOTYPE_PHASE_D_ROTATION
-        bool "Phase D: Enable station rotation after 60s each"
+        bool "Phase D: Enable station rotation after 30s each"
         default n
         help
-            Automatically cycles through all test stations every 60 seconds.
+            Automatically cycles through all test stations every 30 seconds.
             Validates hot station switching (pipeline_change_station) and
             confirms A2DP connection survives the switch.
             Leave disabled for Phase C endurance tests (fixed station).

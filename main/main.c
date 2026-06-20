@@ -56,9 +56,9 @@ static void start_rotation_timer(void)
         .name     = "phase_d_rot",
     };
     if (esp_timer_create(&args, &s_rotation_timer) == ESP_OK) {
-        /* Fire every 60 s; first switch happens 60 s after start */
-        esp_timer_start_periodic(s_rotation_timer, 60ULL * 1000 * 1000);
-        ESP_LOGI(TAG, "Phase D: rotation timer started (60 s intervals)");
+        /* Fire every 30 s; first switch happens 30 s after start */
+        esp_timer_start_periodic(s_rotation_timer, 30ULL * 1000 * 1000);
+        ESP_LOGI(TAG, "Phase D: rotation timer started (30 s intervals)");
     } else {
         ESP_LOGE(TAG, "Failed to create rotation timer");
     }
