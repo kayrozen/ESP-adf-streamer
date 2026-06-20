@@ -73,8 +73,16 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 # internal DRAM, lifting the streaming-phase floor from ~26KB (where log 20
 # crashed in lwIP after ~1s of audio) to ~42KB.
 #
-# Static RX kept at 8 — these hold inbound audio frames; dropping them risks
-# losing data under BT/WiFi coexistence.
+# Static RX reduced 8 -> 6 as a DRAM-headroom lever (frees 6.4 KB: 2 static + 2
+# dynamic RX x 1.6 KB).  Rationale: log 59 showed "wifi:m f null" (mgmt-frame
+# allocation failures from the general internal heap) plus min-ever internal heap
+# down to 6 KB during playback, which correlates with the choppy audio.  Those
+# allocations draw from the same general heap as the RX pool, so shrinking the
+# pool gives the runtime allocator more room.  TRADE-OFF: RX buffers hold inbound
+# audio frames, so 6 (vs 8) gives slightly less cushion against burst loss under
+# BT/WiFi coexistence.  We stream inbound, so monitor for new gaps after this.
+# REVERT to 8 if the next log shows RX drops / increased underflows rather than
+# the expected drop in "wifi:m f null".  Kept static+dynamic symmetric at 6.
 #
 # Log 56: with NUM=6, "wifi:m f null" appeared 11× during the TLS handshake
 # (the ACK burst peaks at the TCP window boundary just as mbedTLS sends the
@@ -88,8 +96,8 @@ CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
 # zero "wifi:m f null" lines during TLS handshake.
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
