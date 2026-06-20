@@ -42,16 +42,13 @@
 #define STATION_AAC_URL \
     "https://icecast.radiofrance.fr/francemusique-hifi.aac"
 
-/* Phase B step 3 (critical): HLS master playlist.
- * History: France Inter (stream.radiofrance.fr) stalled the TLS handshake ~31 s in
- * logs 48-51; replaced with BBC World Service HLS on Akamai, but that CDN geo-blocks
- * Canada (log 59: pipeline stops station 1 then never starts station 2, main task
- * spins 32-46%).  Replaced with CBC Radio One (Canadian broadcaster) HLS master
- * playlist: reachable from the prototype's Canadian network and still exercises the
- * HLS playlist-parser path.  HTTPS Akamai — relies on the same TLS path station 1
- * (HTTPS AAC) already uses, which the 8 KB http-stack fix made reliable. */
+/* Phase B step 3: France Inter AAC Icecast.
+ * History: BBC World Service HLS on Akamai geo-blocks Canada (log 59).  Replaced
+ * with CBC Radio One HLS on akamaihd.net — that CDN was decommissioned (log 64:
+ * stream does not open, rotation stops at CBC).  Replaced with France Inter AAC on
+ * the same icecast.radiofrance.fr CDN proven reliable in all recent logs. */
 #define STATION_HLS_URL \
-    "https://cbcliveradio-lh.akamaihd.net/i/CBCR1_Toronto@118420/master.m3u8"
+    "https://icecast.radiofrance.fr/franceinter-hifi.aac"
 
 /* Phase B step 4: second HTTPS AAC Icecast (France Culture).
  * BBC Radio 1 HLS nonuk/sbr_low path returned HTTP 410 Gone in logs 48/49 —
