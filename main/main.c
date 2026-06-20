@@ -246,7 +246,12 @@ static void run_event_loop(void)
                              * CBC Akamai hung the rotation indefinitely). */
                             s_station_error_count++;
                             if (s_station_error_count >= 3) {
+<<<<<<< HEAD
                                 advance_to_next_station();
+=======
+                                s_station_error_count = 0;
+                                s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+>>>>>>> 7a6eba7 (Fix choppy AAC, stalled rotation, and broken CBC station)
                                 ESP_LOGW(TAG, "Station stalled 3× — advancing to station %d: %s",
                                          s_current_station, TEST_STATIONS[s_current_station].name);
                             } else {
