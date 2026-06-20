@@ -166,7 +166,7 @@ static audio_element_handle_t create_a2dp_stream(void)
 
 /* ---- public API ---- */
 
-esp_err_t pipeline_init(const uint8_t peer_bda[6])
+esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
 {
     memcpy(s_peer_bda, peer_bda, 6);
 
@@ -185,8 +185,14 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
         return ESP_FAIL;
     }
 
+    /* Create the initial decoder matching the first station's codec so the first
+     * playback runs on a freshly-created decoder, not one reached via a live
+     * MP3->AAC hot-swap. This isolates the decoder from the swap mechanism when
+     * diagnosing AAC audio corruption. */
+    pipeline_codec_t boot_codec = boot_url ? detect_codec_from_url(boot_url)
+                                           : PIPELINE_CODEC_MP3;
     s_http_el     = create_http_stream();
-    s_decoder_el  = create_decoder(PIPELINE_CODEC_MP3);  /* default, will be updated on first stream */
+    s_decoder_el  = create_decoder(boot_codec);
     s_a2dp_el     = create_a2dp_stream();
 
     if (!s_http_el || !s_decoder_el || !s_a2dp_el) {
@@ -225,8 +231,8 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6])
      * bt_manager_connect_a2dp_blocking() before pipeline_start() so the BR/EDR
      * page does not contend with the HTTP stream under BT/WiFi coexistence. */
 
-    s_current_codec = PIPELINE_CODEC_MP3;
-    ESP_LOGI(TAG, "Pipeline initialized");
+    s_current_codec = boot_codec;
+    ESP_LOGI(TAG, "Pipeline initialized (boot codec %d)", boot_codec);
     return ESP_OK;
 
 err_cleanup:

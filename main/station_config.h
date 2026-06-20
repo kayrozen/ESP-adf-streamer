@@ -42,9 +42,14 @@
 #define STATION_AAC_URL \
     "https://icecast.radiofrance.fr/francemusique-hifi.aac"
 
-/* Phase B step 3 (critical): HLS master playlist */
+/* Phase B step 3 (critical): HLS master playlist.
+ * France Inter (stream.radiofrance.fr/.../franceinter_hifi.m3u8) stalled the TLS
+ * handshake for ~31 s in logs 48-51 (the /accs3/ segment CDN tier never completes
+ * the handshake), which also triggered a WiFi deauth (reason 7) that corrupted the
+ * following station.  Replaced with the BBC World Service HLS on Akamai: plaintext
+ * HTTP (no TLS handshake to stall) and globally reachable. */
 #define STATION_HLS_URL \
-    "https://stream.radiofrance.fr/franceinter/franceinter_hifi.m3u8"
+    "http://as-hls-ww-live.akamaized.net/pool_904/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio=96000.norewind.m3u8"
 
 /* Phase B step 4: second HTTPS AAC Icecast (France Culture).
  * BBC Radio 1 HLS nonuk/sbr_low path returned HTTP 410 Gone in logs 48/49 —

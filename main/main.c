@@ -21,12 +21,20 @@
 
 static const char *TAG = "app_main";
 
-/* Phase D — station rotation table */
+/* Phase D — station rotation table.
+ *
+ * AAC Icecast is deliberately station 0 for the decoder-vs-hot-swap bisection:
+ * pipeline_init() now creates the initial decoder to match station 0's codec, so
+ * this AAC stream plays on a fresh AAC decoder with NO live MP3->AAC hot-swap.
+ *   - If station 0 (AAC, no swap) is CLEAN but later AAC is corrupt -> the bug is
+ *     in the hot-swap path.
+ *   - If station 0 (AAC, no swap) is still corrupt -> the bug is the AAC decoder
+ *     or the source stream itself, independent of the swap. */
 static const station_t TEST_STATIONS[NUM_TEST_STATIONS] = {
-    { "MP3 Icecast",        STATION_MP3_URL        },
-    { "AAC Icecast",        STATION_AAC_URL        },
-    { "HLS mono-bitrate",   STATION_HLS_URL        },
-    { "France Culture AAC", STATION_HLS_MULTI_URL  },
+    { "AAC Icecast (boot)",  STATION_AAC_URL        },
+    { "MP3 Icecast",         STATION_MP3_URL        },
+    { "HLS (BBC WS)",        STATION_HLS_URL        },
+    { "France Culture AAC",  STATION_HLS_MULTI_URL  },
 };
 
 static int s_current_station = 0;
@@ -288,7 +296,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Heap pre-pipeline: internal=%"PRIu32"B  SPIRAM=%"PRIu32"B",
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda()));  /* uses discovered/configured BDA */
+    ESP_ERROR_CHECK(pipeline_init(bt_manager_get_peer_bda(), TEST_STATIONS[0].url));  /* boot decoder matches station 0 */
 
     /* ---- Bring up A2DP BEFORE streaming ----
      * pipeline_init() has initialized the A2DP source profile (via a2dp_stream).
@@ -306,8 +314,8 @@ void app_main(void)
     monitor_init();
     monitor_start();
 
-    /* ---- Phase B: Start first station (MP3 — simplest) ---- */
-    ESP_LOGI(TAG, "Starting Phase B — MP3 Icecast baseline test");
+    /* ---- Phase B: Start first station (AAC — boots on a fresh AAC decoder) ---- */
+    ESP_LOGI(TAG, "Starting Phase B — station 0: %s", TEST_STATIONS[0].name);
     int64_t t_start = esp_timer_get_time();
     ESP_ERROR_CHECK(pipeline_start(TEST_STATIONS[0].url));
     ESP_LOGI(TAG, "Pipeline start latency: %" PRId64 " ms",

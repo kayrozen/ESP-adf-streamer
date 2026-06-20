@@ -25,8 +25,12 @@ typedef enum {
  * Initialize pipeline elements and register them.
  * Must be called after bt_manager_init() and wifi_manager_connect().
  * @param peer_bda   Bluetooth address of A2DP sink (from bt_manager)
+ * @param boot_url   URL of the first station to play. Used to create the initial
+ *                   decoder matching the first stream's codec, so the first
+ *                   playback does not incur a MP3->AAC hot-swap. May be NULL
+ *                   (falls back to an MP3 initial decoder).
  */
-esp_err_t pipeline_init(const uint8_t peer_bda[6]);
+esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url);
 
 /**
  * Start streaming from the given URL.
