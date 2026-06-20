@@ -36,6 +36,17 @@ CONFIG_SPIRAM_CACHE_LIBRAND_IN_IRAM=y
 CONFIG_SPIRAM_CACHE_LIBEVENT_IN_IRAM=y
 CONFIG_SPIRAM_CACHE_LIBSOCKET_IN_IRAM=y
 
+# WiFi + LWIP buffers -> PSRAM first.  Second half of the ESP-ADF coexistence memory
+# recipe (see the Bluedroid PSRAM note in the Bluetooth section): try to allocate WiFi
+# and LWIP memory from PSRAM, falling back to internal DRAM only when PSRAM is full.
+# This moves the LWIP pbufs / TCP segment buffers and WiFi control structures (the
+# non-DMA allocations) off internal DRAM — directly relieving the internal-heap pressure
+# that produced the "wifi:m f null" flood during the TLS handshake (logs 61/62/63).
+# DMA-capable WiFi RX/TX buffers necessarily remain internal; this option does not touch
+# them.  Depends on SPIRAM_USE_MALLOC=y (set above).  Renamed from the v4.x
+# CONFIG_WIFI_LWIP_ALLOCATION_FROM_SPIRAM_FIRST; this is the v5.2 symbol.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
 # Flash size 16MB
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
@@ -51,9 +62,27 @@ CONFIG_BT_SPP_ENABLED=n
 CONFIG_BT_HFP_ENABLE=n
 CONFIG_BT_BLE_ENABLED=n
 CONFIG_BT_STACK_NO_LOG=n
-CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=n
 # Controller memory for Classic BT
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
+
+# Bluedroid HOST memory -> PSRAM.  THE fix for the deterministic TLS-handshake crash
+# (logs 61/62/63): a "wifi:m f null"/"wifi:mem fail" flood during the first https
+# handshake, followed by vQueueDelete(NULL) or abort() — i.e. WiFi failing to allocate
+# a DMA RX buffer from internal DRAM, then a downstream queue/semaphore create returning
+# NULL and its cleanup path asserting.  Pure internal-DRAM exhaustion: heap-pre-pipeline
+# was only 54 KB (log 63), and the concurrent BT-A2DP + WiFi-RX-burst + TLS handshake
+# drove it to zero.
+#
+# Prior fixes nibbled KB off WiFi buffers and the http stack while the ~40 KB Bluedroid
+# host allocation sat pinned in internal DRAM the whole time — which is why none of them
+# worked.  ESP-ADF's own design guide (design-guide/design-considerations.rst) is explicit:
+# for WiFi + Bluetooth + PSRAM coexistence you MUST move the Bluedroid host and the
+# WiFi/LWIP buffers to PSRAM, or "it will not leave enough memory for an audio application."
+# BT_ALLOCATION_FROM_SPIRAM_FIRST routes Bluedroid host allocations (~40 KB) to PSRAM; the
+# BT *controller* (BTDM) DMA memory necessarily stays internal.  Depends on
+# SPIRAM_USE_MALLOC=y (set above).  WiFi RX DMA buffers also stay internal (DMA), but
+# freeing ~40 KB of Bluedroid lets those DMA allocs succeed during the handshake burst.
+CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
 
 # WiFi — PSRAM forces STATIC TX buffers, so shrink the static pool instead.
 #
@@ -158,17 +187,16 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 # DRAM ("allocate stack on internal memory"), and log 61 hit the internal-DRAM ceiling:
 # a "wifi:m f null" flood + NULL-queue asserts, heap-at-start down to 21 KB.
 #
-# Fix: the CI now builds on IDF v5.2 (see .github/workflows/build.yml) and applies
+# The CI builds on IDF v5.2 (see .github/workflows/build.yml) and applies
 # idf_v5.2_freertos.patch, so xTaskCreateRestrictedPinnedToCore() exists and PSRAM
-# stacks work.  We enable the feature globally here; all per-element cfg.stack_in_ext
-# are currently set to false (see create_http_stream(), create_mp3_decoder(), etc. in
-# pipeline.c).  The PSRAM-stack path was attempted for http_stream in log 62 (PR #42)
-# but caused a deterministic vQueueDelete(NULL) assert at the first TLS handshake
-# completion: ESP32 mbedTLS hardware SHA/MPI accelerators write results back to
-# internal DRAM and assert when the task stack is PSRAM-resident.  TLS I/O *buffers*
-# are safely in PSRAM via MBEDTLS_EXTERNAL_MEM_ALLOC=y; only the call-frame stack must
-# stay in internal DRAM.  With IDF 5.2.3 internal heap at boot = 37 KB (log 62), 8 KB
-# http stack internal → ~29 KB headroom — well above the 21 KB OOM floor.
+# stacks work.  We keep the feature available but all per-element cfg.stack_in_ext are
+# currently false (see create_http_stream(), create_mp3_decoder(), etc. in pipeline.c).
+# NOTE: moving the http stack to PSRAM (PR #42, log 62) did NOT fix the TLS-handshake
+# crash and reverting it (PR #43, log 63) did NOT either — both crashed identically.
+# The crash is internal-DRAM exhaustion, not a stack-location issue; the actual fix is
+# the Bluedroid + WiFi/LWIP -> PSRAM moves (BT_ALLOCATION_FROM_SPIRAM_FIRST and
+# SPIRAM_TRY_ALLOCATE_WIFI_LWIP above), which free ~40+ KB of internal DRAM — far more
+# than relocating an 8 KB stack ever could.
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 CONFIG_AUDIO_ELEMENT_TASK_STACK_SIZE=3584
