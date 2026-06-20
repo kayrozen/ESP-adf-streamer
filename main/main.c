@@ -33,7 +33,7 @@ static const char *TAG = "app_main";
 static const station_t TEST_STATIONS[NUM_TEST_STATIONS] = {
     { "AAC Icecast (boot)",  STATION_AAC_URL        },
     { "MP3 Icecast",         STATION_MP3_URL        },
-    { "France Inter AAC",    STATION_HLS_URL        },
+    { "France Inter HLS",    STATION_HLS_URL        },
     { "France Culture AAC",  STATION_HLS_MULTI_URL  },
 };
 

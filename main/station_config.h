@@ -42,13 +42,18 @@
 #define STATION_AAC_URL \
     "https://icecast.radiofrance.fr/francemusique-hifi.aac"
 
-/* Phase B step 3: France Inter AAC Icecast.
- * History: BBC World Service HLS on Akamai geo-blocks Canada (log 59).  Replaced
- * with CBC Radio One HLS on akamaihd.net — that CDN was decommissioned (log 64:
- * stream does not open, rotation stops at CBC).  Replaced with France Inter AAC on
- * the same icecast.radiofrance.fr CDN proven reliable in all recent logs. */
+/* Phase B step 3 (critical): HLS master playlist — exercises the http_stream
+ * playlist-parser (two-level m3u8 -> media playlist -> AAC segments).
+ * History: BBC World Service HLS on Akamai geo-blocks Canada (log 59); CBC Radio
+ * One HLS on akamaihd.net was decommissioned (log 64: stream never opens, rotation
+ * hangs).  Both failures were CDN-reachability, not HLS parsing.  France Inter HLS
+ * is served from Radio France's own stream.radiofrance.fr — the SAME provider as
+ * our proven-reliable icecast.radiofrance.fr AAC stations — so it isolates the HLS
+ * path from CDN geo/availability issues.  The earlier "TLS stall" on this host
+ * (logs 48-51) was the internal-DRAM OOM crash, since fixed by the PSRAM memory
+ * moves; the TLS path itself is the same one stations 0/2/3 use reliably. */
 #define STATION_HLS_URL \
-    "https://icecast.radiofrance.fr/franceinter-hifi.aac"
+    "https://stream.radiofrance.fr/franceinter/franceinter_hifi.m3u8"
 
 /* Phase B step 4: second HTTPS AAC Icecast (France Culture).
  * BBC Radio 1 HLS nonuk/sbr_low path returned HTTP 410 Gone in logs 48/49 —
