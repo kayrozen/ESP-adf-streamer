@@ -51,8 +51,26 @@ static pipeline_codec_t s_current_codec = PIPELINE_CODEC_AUTO;
 /* Mutex for protecting pipeline state during station changes */
 static SemaphoreHandle_t s_pipeline_mutex = NULL;
 
-/* Forward declaration for static function used in pipeline_start */
+/* Sample rate / channel count the rsp_filter element is currently BUILT for
+ * (i.e. the src_rate/src_ch passed to create_resample_filter() for the element
+ * that is registered right now).  The resampler is never reconfigured in place —
+ * rsp_filter_set_src_info() destroys and rebuilds the internal SRC handle and was
+ * the source of the deterministic vQueueDelete(NULL) crash (logs 54/55/56).
+ * Instead, when the decoder reports a rate that differs from this, the whole
+ * rsp_filter element is hot-swapped for a fresh one created at the new rate via
+ * the proven init path (see pipeline_recreate_resample).
+ *
+ * Set in pipeline_init() to the boot codec's expected rate.  The element keeps
+ * its src_rate across audio_pipeline_reset_elements() (a station change re-opens
+ * the same element with the same cfg), so this stays valid across station changes
+ * and a same-rate switch needs no rebuild. */
+static int s_rsp_src_rate = 48000;
+static int s_rsp_src_ch   = 2;
+
+/* Forward declarations for static functions used before their definition */
 static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec);
+static esp_err_t pipeline_recreate_resample(int src_rate, int src_ch);
+static audio_element_handle_t create_resample_filter(int src_rate, int src_ch);
 
 /* ---- helpers ---- */
 
@@ -112,7 +130,7 @@ static audio_element_handle_t create_aac_decoder(void)
     return aac_decoder_init(&cfg);
 }
 
-static audio_element_handle_t create_resample_filter(void)
+static audio_element_handle_t create_resample_filter(int src_rate, int src_ch)
 {
     /* Normalise all decoded PCM to 44100 Hz stereo 16-bit before the SBC encoder.
      *
@@ -124,18 +142,22 @@ static audio_element_handle_t create_resample_filter(void)
      * errors in logs 49-53 are the same mismatch on the BT side.
      *
      * rsp_filter does NOT learn the upstream rate on its own (ADF elements only
-     * exchange raw PCM through ring buffers), so it is created at 44100 Hz here
-     * and the decoder's real output rate is pushed in at runtime via
-     * pipeline_set_resample_src_info() — see the format watcher in main.c. That
-     * makes it a no-op pass-through for 44100 Hz MP3 and a 48000->44100 Hz
-     * downsample for AAC.
+     * exchange raw PCM through ring buffers).  We cannot know an arbitrary stream's
+     * rate until the decoder opens it, so the element is created at a best-guess
+     * src_rate (from the URL's codec) and, if the decoder later reports a different
+     * rate, the element is hot-swapped for a fresh one built at the real rate —
+     * see pipeline_recreate_resample().  We deliberately do NOT call
+     * rsp_filter_set_src_info() at runtime: it tears down and rebuilds the internal
+     * SRC handle and was the source of the deterministic vQueueDelete(NULL) crash
+     * (logs 54/55/56).  Every working ADF resample example configures the rate at
+     * init only; this keeps us on that proven path for any URL/codec/rate.
      *
      * PCM_JITTER_RB_SIZE (512 KB) is placed here, on the resampler's output ring
      * buffer (44100 Hz, 176.4 KB/s), giving 2.9 s of reserve for HTTPS delivery
-     * stalls — same headroom as before, but now at the correct sample rate. */
+     * stalls. */
     rsp_filter_cfg_t cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
-    cfg.src_rate    = 48000;  /* boot station is AAC 48000 Hz; non-identity avoids NULL SRC handle */
-    cfg.src_ch      = 2;
+    cfg.src_rate    = src_rate;  /* real decoded rate; non-identity avoids NULL SRC handle */
+    cfg.src_ch      = src_ch;
     cfg.dest_rate   = 44100;  /* fixed to match JBL SBC negotiation */
     cfg.dest_ch     = 2;
     cfg.task_core   = 1;
@@ -143,6 +165,71 @@ static audio_element_handle_t create_resample_filter(void)
     cfg.task_stack  = 4 * 1024;  /* resample task only calls esp_resample_process(); heap-allocated bufs; 4 KB ample */
     cfg.out_rb_size = PCM_JITTER_RB_SIZE;
     return rsp_filter_init(&cfg);
+}
+
+/* Hot-swap the rsp_filter element for a fresh one built at (src_rate, src_ch).
+ *
+ * Mirrors pipeline_recreate_decoder() but, because it is called mid-stream from
+ * the format watcher (not before the initial run), it restarts the pipeline at
+ * the end.  The caller MUST hold s_pipeline_mutex.  On any failure the old
+ * element is restored and the pipeline is restarted so playback continues. */
+static esp_err_t pipeline_recreate_resample(int src_rate, int src_ch)
+{
+    audio_element_handle_t new_rsp = create_resample_filter(src_rate, src_ch);
+    if (!new_rsp) {
+        ESP_LOGE(TAG, "Failed to create resample filter for %d Hz / %d ch", src_rate, src_ch);
+        return ESP_FAIL;
+    }
+
+    /* Keep the old element until the new one is fully linked, for rollback. */
+    audio_element_handle_t old_rsp = s_resample_el;
+    const char *link_tag[] = {"http", "dec", "rsp", "bt"};
+
+    audio_pipeline_stop(s_pipeline);
+    audio_pipeline_wait_for_stop(s_pipeline);
+    audio_pipeline_unlink(s_pipeline);
+    audio_pipeline_unregister(s_pipeline, old_rsp);
+
+    s_resample_el = new_rsp;
+    esp_err_t ret = audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register new resampler: %d — rolling back", ret);
+        s_resample_el = old_rsp;
+        audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+        audio_pipeline_link(s_pipeline, link_tag, 4);
+        audio_pipeline_reset_ringbuffer(s_pipeline);
+        audio_pipeline_reset_elements(s_pipeline);
+        audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
+        audio_pipeline_run(s_pipeline);
+        audio_element_deinit(new_rsp);
+        return ret;
+    }
+
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to relink after resampler swap: %d — rolling back", ret);
+        s_resample_el = old_rsp;
+        audio_pipeline_unregister(s_pipeline, new_rsp);
+        audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+        audio_pipeline_link(s_pipeline, link_tag, 4);
+        audio_pipeline_reset_ringbuffer(s_pipeline);
+        audio_pipeline_reset_elements(s_pipeline);
+        audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
+        audio_pipeline_run(s_pipeline);
+        audio_element_deinit(new_rsp);
+        return ret;
+    }
+
+    /* Success: new resampler is linked. Now safe to deinit the old one. */
+    audio_element_deinit(old_rsp);
+
+    /* Restart the pipeline from a clean state (same sequence as a station change). */
+    audio_pipeline_reset_ringbuffer(s_pipeline);
+    audio_pipeline_reset_elements(s_pipeline);
+    audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
+    ret = audio_pipeline_run(s_pipeline);
+    ESP_LOGI(TAG, "Resampler rebuilt: %d Hz / %d ch -> 44100 Hz / 2 ch", src_rate, src_ch);
+    return ret;
 }
 
 esp_err_t pipeline_set_resample_src_info(int rate, int ch)
@@ -153,16 +240,23 @@ esp_err_t pipeline_set_resample_src_info(int rate, int ch)
     if (rate <= 0 || ch <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* No caching here: a station change resets the elements (reverting the
-     * resampler toward its default src_rate), so the new rate must be pushed
-     * through unconditionally even when it equals the previous station's rate.
-     * The caller (format watcher in main.c) already throttles redundant polls. */
-    esp_err_t ret = rsp_filter_set_src_info(s_resample_el, rate, ch);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Resampler source set to %d Hz / %d ch -> 44100 Hz / 2 ch", rate, ch);
-    } else {
-        ESP_LOGE(TAG, "rsp_filter_set_src_info(%d,%d) failed: %d", rate, ch, ret);
+    /* No change vs the rate the current element was built for — nothing to do.
+     * This is the common case: the boot/station codec guess matched the real
+     * decoded rate, so the resampler is already correct and no rebuild happens. */
+    if (rate == s_rsp_src_rate && ch == s_rsp_src_ch) {
+        return ESP_OK;
     }
+
+    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to take pipeline mutex for resampler rebuild");
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t ret = pipeline_recreate_resample(rate, ch);
+    if (ret == ESP_OK) {
+        s_rsp_src_rate = rate;
+        s_rsp_src_ch   = ch;
+    }
+    xSemaphoreGive(s_pipeline_mutex);
     return ret;
 }
 
@@ -237,9 +331,16 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
      * diagnosing AAC audio corruption. */
     pipeline_codec_t boot_codec = boot_url ? detect_codec_from_url(boot_url)
                                            : PIPELINE_CODEC_MP3;
+    /* Best-guess source rate from the boot codec so the resampler is built right
+     * the first time and the format watcher's first fire is a no-op for the common
+     * case (AAC streams are 48000 Hz, MP3 typically 44100 Hz).  If the real decoded
+     * rate differs, the watcher rebuilds the element once via
+     * pipeline_recreate_resample(). */
+    s_rsp_src_rate = (boot_codec == PIPELINE_CODEC_AAC) ? 48000 : 44100;
+    s_rsp_src_ch   = 2;
     s_http_el      = create_http_stream();
     s_decoder_el   = create_decoder(boot_codec);
-    s_resample_el  = create_resample_filter();
+    s_resample_el  = create_resample_filter(s_rsp_src_rate, s_rsp_src_ch);
     s_a2dp_el      = create_a2dp_stream();
 
     if (!s_http_el || !s_decoder_el || !s_resample_el || !s_a2dp_el) {
@@ -403,6 +504,15 @@ esp_err_t pipeline_change_station(const char *new_url)
     }
 
     ESP_LOGI(TAG, "Changing station -> %s", new_url);
+
+    /* NOTE: do NOT invalidate s_rsp_src_rate/ch here.  The rsp_filter element is
+     * kept across the station change (reset_elements re-opens the SAME element with
+     * the SAME cfg), so it retains the src_rate it was built for.  The cache stays
+     * accurate, which makes a same-rate station change a no-op for the resampler
+     * (no needless rebuild).  If the new stream's decoded rate actually differs,
+     * the format watcher calls pipeline_set_resample_src_info(), which rebuilds the
+     * element via pipeline_recreate_resample().  The watcher itself is re-armed for
+     * every station change in restart_pipeline_station() (main.c). */
 
     /* Detect codec and recreate decoder if needed */
     pipeline_codec_t new_codec = detect_codec_from_url(new_url);
