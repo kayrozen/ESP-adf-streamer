@@ -124,6 +124,28 @@ static void do_switch_to_station(int idx)
 }
 #endif /* CONFIG_PROTOTYPE_PHASE_D_ROTATION */
 
+/* Advance s_current_station to the next station after a permanent failure on the
+ * current one (repeated stream errors or repeated stalls).  Centralises the
+ * advance so every failure path behaves identically AND keeps the Phase-D
+ * rotation cursor in sync: the rotation timer owns s_rotation_next_idx and runs a
+ * one-shot sweep independent of these resilience advances, so without this sync a
+ * later timer tick could re-issue a stale index and jump back onto a station we
+ * already moved past (Gemini review, PR #46). */
+static void advance_to_next_station(void)
+{
+    s_station_error_count = 0;
+    s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+#if CONFIG_PROTOTYPE_PHASE_D_ROTATION
+    /* Keep the rotation timer's next index ahead of where we just landed so its
+     * sweep resumes AFTER the current station rather than replaying an earlier
+     * one.  Guarded against moving backward so a wrap-around advance (last -> 0)
+     * does not restart a sweep that has already completed. */
+    if (s_rotation_next_idx <= s_current_station) {
+        s_rotation_next_idx = s_current_station + 1;
+    }
+#endif
+}
+
 /* Pipeline event loop — handles all ADF element/pipeline events.
  * Station rotation (Phase D) is also driven from here to avoid racing with
  * queued element events after a decoder hot-swap. */
@@ -224,8 +246,7 @@ static void run_event_loop(void)
                              * CBC Akamai hung the rotation indefinitely). */
                             s_station_error_count++;
                             if (s_station_error_count >= 3) {
-                                s_station_error_count = 0;
-                                s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+                                advance_to_next_station();
                                 ESP_LOGW(TAG, "Station stalled 3× — advancing to station %d: %s",
                                          s_current_station, TEST_STATIONS[s_current_station].name);
                             } else {
@@ -279,8 +300,7 @@ static void run_event_loop(void)
                 if (s_station_error_count >= 3) {
                     /* Permanent failure (e.g. HTTP 4xx, CDN timeout): skip to
                      * next station rather than spinning forever on a dead URL. */
-                    s_station_error_count = 0;
-                    s_current_station = (s_current_station + 1) % NUM_TEST_STATIONS;
+                    advance_to_next_station();
                     ESP_LOGW(TAG, "Station failed 3× — advancing to station %d: %s",
                              s_current_station, TEST_STATIONS[s_current_station].name);
                 } else {
