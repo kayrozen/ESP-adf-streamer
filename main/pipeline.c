@@ -84,18 +84,16 @@ static audio_element_handle_t create_http_stream(void)
      * the two can't drift.  8 KB covers mbedTLS TLS 1.2 RSA call frames (ASN.1 parse + key
      * exchange); TLS I/O buffers live in PSRAM via MBEDTLS_EXTERNAL_MEM_ALLOC=y, so only call
      * frames land on this stack, and CANARY catches any genuine overflow. */
-    /* Keep http stack in INTERNAL DRAM.
-     * Log 62: moving this stack to PSRAM (stack_in_ext=true, PR #42) caused a
-     * deterministic vQueueDelete(NULL) assert at the first TLS handshake completion
-     * (ESP_HTTP_CLIENT_EVENT:1/:2), crashing all three boot attempts identically.
-     * ESP32 mbedTLS uses hardware SHA/MPI accelerators that write results back to
-     * memory; with the task stack in PSRAM (cache-backed at 40 MHz) the hardware
-     * context is not in internal DRAM as the crypto block expects, and the state
-     * machine asserts.  TLS I/O *buffers* are safely in PSRAM via
-     * MBEDTLS_EXTERNAL_MEM_ALLOC=y (heap-allocated, not stack-resident); only the
-     * call-frame stack itself must stay internal.
-     * Internal headroom is adequate: log 62 showed 37 KB free with the stack in
-     * PSRAM; reverting costs 8 KB → ~29 KB, well above the 21 KB OOM floor. */
+    /* Keep http stack in INTERNAL DRAM — but note this is NOT the cause of, nor the fix
+     * for, the TLS-handshake crash.  Logs 62 (stack_in_ext=true) and 63 (=false) crashed
+     * IDENTICALLY at the first https handshake, which proves the stack's location is
+     * irrelevant to it.  The real cause is internal-DRAM exhaustion under WiFi+BT+TLS
+     * coexistence ("wifi:m f null" flood -> NULL queue handle -> vQueueDelete/abort); the
+     * fix is moving the Bluedroid host and WiFi/LWIP buffers to PSRAM
+     * (BT_ALLOCATION_FROM_SPIRAM_FIRST + SPIRAM_TRY_ALLOCATE_WIFI_LWIP in
+     * sdkconfig.defaults).  We leave this stack internal because the http task is small
+     * and a PSRAM (40 MHz cache-backed) stack buys nothing once Bluedroid is the freed
+     * memory; internal keeps it simple and avoids any PSRAM-stack edge cases. */
     cfg.stack_in_ext      = false;
     cfg.task_prio         = 23;
     /* HTTP_STREAM_TASK_CORE defaults to 0 via Kconfig — move to Core 1.
