@@ -123,27 +123,29 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
 
-    /* WiFi power-save listen interval.
+    /* WiFi listen interval for MAX_MODEM power save.
      *
-     * With WIFI_PS_MIN_MODEM the station wakes at every DTIM beacon (~102ms with
-     * DTIM=1 AP config) regardless of this field — the field is IGNORED by
-     * MIN_MODEM.  Set to 1 for clarity.
+     * With WIFI_PS_MAX_MODEM and li=N, the station sleeps for N × DTIM periods
+     * before waking to check for buffered data.  Our AP's DTIM period = 1 (every
+     * beacon, ~102ms), so li=3 → 307ms sleep windows.
      *
-     * History:
-     *   PS_NONE        → 0% WiFi sleep; starved BT to ~60% airtime (log 24).
-     *   MIN_MODEM/li=1 → wakes every 102ms; previously used, worked but replaced.
-     *   MAX_MODEM/li=3 → 307ms sleep; gave BT 97% airtime BUT http_out_rb drained
-     *                     to zero in ~20s causing constant decoder starvation and
-     *                     choppy AAC (confirmed by DIAG log c78fe5b5: dec_rb=0,
-     *                     rsp_rb=0% during 1.4s server chunk gaps).
+     * During each 307ms sleep BT has near-exclusive 2.4 GHz access.  At 192kbps
+     * stream rate we need 24KB/s = 7.4KB per 307ms window.  WiFi downloads that
+     * in ~7ms at ~1MB/s burst, then sleeps again → BT gets ~97% of airtime.
+     * This directly eliminates the startup L2CAP is_cong bursts (log 65: 17
+     * events in the first 5s of francemusique, causing audible choppiness).
      *
-     * With MIN_MODEM (102ms gaps) and http_out_rb=512KB:
-     *   - Per-gap consumption: 15KB/s × 0.1s = 1.5KB — easily covered
-     *   - Server chunk gaps (~1.4s): 15KB/s × 1.4s = 21KB — covered by 512KB buf
-     *   - BT airtime: ~93% (102ms cycle, ~7ms WiFi burst) vs 97% before; the
-     *     remaining 4% difference is well within BT's SBC retransmission margin
-     *     now that Bluedroid runs from PSRAM and Core 0 is no longer saturated. */
-    wifi_cfg.sta.listen_interval = 1;
+     * Our ring buffers absorb the bursty WiFi pattern:
+     *   HTTP ring buf   64KB  = 2.7s @ 192kbps  (64000/24000)
+     *   PCM jitter buf 512KB  = 2.9s @ 176KB/s  (512000/176400)
+     *
+     * History: li=3 with an earlier codebase (PR #19) was replaced by PS_NONE
+     * which kept WiFi awake continuously and starved BT to ~60% A2DP throughput
+     * (log 24).  That was then tuned to li=1 + PS_MIN_MODEM.  With PS_MIN_MODEM,
+     * the listen_interval field is IGNORED — MIN_MODEM always wakes at every DTIM
+     * regardless, so li=1 vs li=3 made no difference.  The buffers are now much
+     * larger (PSRAM), so li=3 + MAX_MODEM is safe and gives far more BT airtime. */
+    wifi_cfg.sta.listen_interval = 3;
 
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
@@ -157,13 +159,18 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *pass)
         return ret;
     }
 
-    /* MIN_MODEM power save: wakes at every DTIM beacon (~102ms) to receive any
-     * AP-buffered packets.  This replaces the previous MAX_MODEM+li=3 (307ms
-     * sleep) which drained the compressed HTTP buffer and caused constant decoder
-     * starvation.  See listen_interval comment above for full history. */
-    ret = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    /* MAX_MODEM power save: WiFi sleeps for listen_interval (3) × DTIM periods
+     * between wakes.  Combined with li=3 above, this gives ~307ms sleep windows
+     * where BT has near-exclusive 2.4GHz access, eliminating the startup L2CAP
+     * is_cong bursts observed in logs 64/65.
+     *
+     * PS_NONE (tried in PR #19) starved BT to ~60% airtime (log 24).
+     * PS_MIN_MODEM (used previously) ignores listen_interval entirely — it always
+     * wakes every DTIM (~102ms) — so li=1 and li=3 were equivalent under it.
+     * PS_MAX_MODEM is required for listen_interval > 1 to take effect. */
+    ret = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_set_ps(MIN_MODEM) failed: %d", ret);
+        ESP_LOGW(TAG, "esp_wifi_set_ps(MAX_MODEM) failed: %d", ret);
     }
 
     ESP_LOGI(TAG, "Connecting to SSID: %s …", ssid);
