@@ -78,7 +78,11 @@ static int s_rsp_src_ch   = 2;
  * the real rate before any audio reaches the BT sink, and persist it here.  On
  * every later visit (including across reboots) the cache hit skips the probe and
  * the resampler is built correct the first time — zero wrong-rate audio. */
-#define RSP_CACHE_NS  "rspcache"
+/* Namespace is versioned: a probe bug (pre-v2) latched the AAC decoder's
+ * transient first-frame rate (44100 for a 48000 Hz stream), poisoning entries
+ * with the wrong rate.  Bumping the namespace abandons every stale entry so all
+ * URLs are re-probed with the fixed settle logic (see probe_rate_locked). */
+#define RSP_CACHE_NS  "rspcache2"
 
 /* Forward declarations for static functions used before their definition */
 static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec);
@@ -319,12 +323,24 @@ static esp_err_t swap_rsp_element_locked(int rate, int ch)
  * Links only {http, dec}: the decoder fills its output ring buffer with a few
  * frames and then blocks (no downstream consumer), but audio_element_getinfo()
  * already reports the real sample_rate once the decoder has opened the stream and
- * read the first frame header (~100-300 ms for Icecast, longer for HLS).  We
- * require two consecutive equal non-zero reads to ride out the AAC decoder's
- * transient first-poll rate (log 64: 44100 then 48000).  Leaves the pipeline
- * STOPPED and UNLINKED so the caller can swap the resampler and relink all four. */
-#define PROBE_TIMEOUT_US   (5LL * 1000 * 1000)
+ * read the first frame header (~100-300 ms for Icecast, longer for HLS).
+ *
+ * CRITICAL: the AAC decoder reports a transient rate on its first parsed frame(s)
+ * before settling — observed 44100 then 48000 for a true 48000 Hz stream (log 64).
+ * The old rule (two consecutive equal reads, 100 ms) latched that transient and
+ * cached 44100 for francemusique's 48000 Hz AAC.  The resampler was then built for
+ * a 44100 Hz input while the decoder produced 48000 Hz: an 8.8 % surplus
+ * (192.0 vs 176.4 KB/s) that refilled the 64 KB dec->rsp ring buffer every ~0.36 s
+ * and periodically stalled the decoder — audible as steady tiny gaps throughout
+ * AAC playback (the log-53 defect, reintroduced via a poisoned cache entry).
+ *
+ * Fix: require the same non-zero rate to hold for PROBE_STABLE_MS before accepting
+ * it.  A brief first-frame transient cannot accumulate that much continuous
+ * stability before the decoder flips to (and holds) the real rate.  Leaves the
+ * pipeline STOPPED and UNLINKED so the caller can swap the resampler and relink. */
+#define PROBE_TIMEOUT_US   (8LL * 1000 * 1000)
 #define PROBE_POLL_MS      50
+#define PROBE_STABLE_MS    600   /* a rate must hold this long to be trusted */
 
 static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
 {
@@ -349,7 +365,7 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
         return ret;
     }
 
-    int last_rate = -1, last_ch = -1, stable = 0;
+    int last_rate = -1, last_ch = -1, stable_ms = 0;
     esp_err_t result = ESP_ERR_TIMEOUT;
     int64_t t0 = esp_timer_get_time();
     while ((esp_timer_get_time() - t0) < PROBE_TIMEOUT_US) {
@@ -364,16 +380,19 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
         audio_element_getinfo(s_decoder_el, &ai);
         if (ai.sample_rates > 0 && ai.channels > 0) {
             if (ai.sample_rates == last_rate && ai.channels == last_ch) {
-                if (++stable >= 2) {
+                stable_ms += PROBE_POLL_MS;
+                if (stable_ms >= PROBE_STABLE_MS) {
                     *out_rate = ai.sample_rates;
                     *out_ch   = ai.channels;
                     result = ESP_OK;
                     break;
                 }
             } else {
+                /* New reading — restart the stability window.  This resets on the
+                 * 44100->48000 transition so only the settled rate can mature. */
                 last_rate = ai.sample_rates;
                 last_ch   = ai.channels;
-                stable    = 1;
+                stable_ms = 0;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(PROBE_POLL_MS));
@@ -420,23 +439,16 @@ static esp_err_t start_station_locked(const char *url)
     int rate = 0, ch = 0;
     if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
         ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
-    } else if (strstr(url, ".m3u8")) {
-        /* HLS: skip probe on cache miss.
-         *
-         * After a probe of an HLS URL, a second TLS + multi-step playlist
-         * fetch (master .m3u8 → media .m3u8 → first .ts segment) must
-         * complete within dec's RESUME timeout (~4000ms) while A2DP is now
-         * active and competing with WiFi on the 2.4 GHz band.  Log 68 shows
-         * this taking >4000ms → [dec] RESUME timeout → pipeline destroyed.
-         *
-         * All tested Radio France HLS streams use AAC-LC at 44100 Hz.  Cache
-         * 44100 Hz directly so subsequent visits are instant cache hits, and
-         * run a single connection rather than probe + real-run. */
-        rate = 44100;
-        ch   = 2;
-        ESP_LOGI(TAG, "HLS stream (no cache): skipping probe, defaulting to %d Hz / %d ch", rate, ch);
-        rate_cache_put(url, rate, ch);
     } else {
+        /* Cache miss: probe the decoder for the true rate.  This now covers HLS
+         * too — the earlier HLS-skip workaround (hardcoding 44100) guessed the
+         * rate and would mis-build the resampler for a 48000 Hz HLS stream,
+         * causing the same steady-gap defect we are fixing for francemusique.
+         * The probe's RESUME-timeout hazard on the following real run is resolved
+         * by terminating http+dec after the probe (see probe_rate_locked): the
+         * real run creates fresh tasks, so a slow second HLS connect no longer
+         * trips dec's RESUME timeout.  Cost on an HLS cache miss is two connect
+         * sequences (probe + real), one-time per URL until cached. */
         ret = probe_rate_locked(url, &rate, &ch);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "Probe learned %d Hz / %d ch — caching", rate, ch);
