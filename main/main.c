@@ -151,12 +151,25 @@ static void run_event_loop(void)
     uint64_t stall_last_bytes = 0;
     int64_t  stall_since_us   = esp_timer_get_time();
 
+    /* Periodic playback diagnostic (decoder rate + ring-buffer fills) to pin
+     * down the AAC choppiness: emit roughly every 2 s while streaming. */
+    int64_t  diag_last_us = 0;
+
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
         audio_event_iface_msg_t msg;
         /* Use a short timeout so we can service station-rotation requests from
          * the timer callback without a separate task that could race with us. */
         esp_err_t ret = audio_event_iface_listen(evt, &msg, pdMS_TO_TICKS(500));
+
+        /* Emit the playback diagnostic ~every 2 s, independent of events. */
+        {
+            int64_t now = esp_timer_get_time();
+            if (now - diag_last_us >= 2LL * 1000000) {
+                diag_last_us = now;
+                pipeline_log_diag();
+            }
+        }
 
 #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
         /* Check for pending station rotation (set by timer, consumed here) */

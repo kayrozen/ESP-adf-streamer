@@ -8,6 +8,7 @@
 #include "nvs.h"
 #include "audio_pipeline.h"
 #include "audio_element.h"
+#include "ringbuf.h"
 #include "audio_event_iface.h"
 #include "http_stream.h"
 #include "mp3_decoder.h"
@@ -807,4 +808,47 @@ audio_event_iface_handle_t pipeline_get_event_iface(void)
 audio_element_handle_t pipeline_get_decoder_el(void)
 {
     return s_decoder_el;
+}
+
+void pipeline_log_diag(void)
+{
+    if (!s_decoder_el || !s_resample_el) return;
+    if (audio_element_get_state(s_decoder_el) != AEL_STATE_RUNNING) return;
+
+    /* Decoder's ACTUAL output format — the ground truth we have never logged.
+     * If this is not 48000 for the AAC stream, the forced resampler src_rate is
+     * wrong and everything downstream is mis-converted. */
+    audio_element_info_t dai = {0};
+    audio_element_getinfo(s_decoder_el, &dai);
+
+    /* PCM throughput since the last call: byte_pos advances as the decoder emits
+     * PCM.  Compare against the real-time rate (rate*ch*2 bytes/s) to see whether
+     * the decoder is keeping up, stalling, or running ahead. */
+    static int64_t  s_prev_us  = 0;
+    static uint64_t s_prev_pos = 0;
+    int64_t  now_us  = esp_timer_get_time();
+    uint64_t cur_pos = (uint64_t)dai.byte_pos;
+    uint32_t kbps = 0;
+    if (s_prev_us != 0 && now_us > s_prev_us && cur_pos >= s_prev_pos) {
+        kbps = (uint32_t)(((cur_pos - s_prev_pos) * 1000) / (uint64_t)(now_us - s_prev_us));
+    }
+    s_prev_us  = now_us;
+    s_prev_pos = cur_pos;
+
+    /* Ring-buffer occupancy.  dec.out_rb feeds the resampler; rsp.out_rb is the
+     * 512 KB PCM jitter buffer the BT sink drains.  A draining rsp.out_rb => BT
+     * is starving (chop from underrun); a full one => delivery is fine and the
+     * chop is in the content/SBC path; a full dec.out_rb => the resampler is the
+     * bottleneck (can't consume decoder output fast enough). */
+    ringbuf_handle_t dec_rb = audio_element_get_output_ringbuf(s_decoder_el);
+    ringbuf_handle_t rsp_rb = audio_element_get_output_ringbuf(s_resample_el);
+    int dec_fill = dec_rb ? rb_bytes_filled(dec_rb) : -1;
+    int dec_size = dec_rb ? rb_get_size(dec_rb)     : -1;
+    int rsp_fill = rsp_rb ? rb_bytes_filled(rsp_rb) : -1;
+    int rsp_size = rsp_rb ? rb_get_size(rsp_rb)     : -1;
+
+    ESP_LOGI(TAG, "DIAG dec=%dHz/%dch  throughput=%uKB/s  dec_rb=%d/%d  rsp_rb=%d/%d (%d%%)",
+             dai.sample_rates, dai.channels, kbps,
+             dec_fill, dec_size, rsp_fill, rsp_size,
+             rsp_size > 0 ? (rsp_fill * 100 / rsp_size) : -1);
 }

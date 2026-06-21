@@ -67,3 +67,13 @@ audio_event_iface_handle_t pipeline_get_event_iface(void);
  * making it a reliable liveness signal for the pipeline.
  */
 audio_element_handle_t pipeline_get_decoder_el(void);
+
+/**
+ * Log a one-line playback diagnostic: the decoder's actual output sample rate /
+ * channels, recent PCM throughput, and the dec/rsp ring-buffer fill levels.
+ * Call periodically (e.g. every ~2 s) from the event loop while streaming to
+ * distinguish BT starvation (rsp buffer draining) from over-production (buffer
+ * full / resampler bottleneck) from clean-delivery-but-bad-content. No-op when
+ * the decoder is not running.
+ */
+void pipeline_log_diag(void);
