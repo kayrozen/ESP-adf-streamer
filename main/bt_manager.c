@@ -9,6 +9,7 @@
 #include "esp_bt_device.h"
 #include "esp_gap_bt_api.h"
 #include "esp_a2dp_api.h"
+#include "esp_coexist.h"
 #include "bt_manager.h"
 
 static const char *TAG = "bt_mgr";
@@ -232,6 +233,28 @@ esp_err_t bt_manager_init(const char *device_name)
     ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(esp_bluedroid_init());
     ESP_ERROR_CHECK(esp_bluedroid_enable());
+
+    /* WiFi/BT coexistence: favour Bluetooth.
+     *
+     * Log f5392eb1 was decisive.  The steady-state choppiness is NOT upstream
+     * starvation — http.out_rb sits at 0% the whole session while the decoder
+     * pulls a steady ~15 KB/s, i.e. the server delivers AAC at exactly real-time
+     * with no surplus to buffer (every prebuffer strategy is therefore a dead
+     * end).  The damage is on the BT side: 35 `l2cab is_cong` events scattered
+     * across playback (vs only startup-window underflows) = the A2DP source's
+     * L2CAP TX buffer overflowing because the BT controller can't drain the link
+     * on time — WiFi and BT are fighting over the single 2.4 GHz radio.
+     *
+     * Our WiFi load is tiny (~15 KB/s), so biasing the coexistence arbiter toward
+     * BT costs the stream almost nothing while giving the BT controller the
+     * contiguous airtime it needs to clear L2CAP before it congests.  This is the
+     * one lever that can actually move is_cong; buffer sizes cannot. */
+    esp_err_t coex_ret = esp_coex_preference_set(ESP_COEX_PREFER_BT);
+    if (coex_ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_coex_preference_set(BT) failed: %d", coex_ret);
+    } else {
+        ESP_LOGI(TAG, "Coexistence preference set to BT");
+    }
 
     /* GAP is owned here; the A2DP profile + callbacks are owned by a2dp_stream. */
     ESP_ERROR_CHECK(esp_bt_gap_register_callback(gap_callback));
