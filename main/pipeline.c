@@ -380,6 +380,16 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
     }
 
     pipeline_stop_if_running();
+    /* Terminate probe tasks so the real run creates fresh ones.  Without
+     * terminate, http and dec remain in STOPPED state.  audio_pipeline_run()
+     * on stopped tasks sends RESUME instead of creating new tasks — but the
+     * RESUME handler calls open(), which on HLS must complete a multi-step
+     * TLS + playlist fetch sequence within ~4000ms while BT is now competing
+     * with WiFi.  That budget is regularly exceeded → dec RESUME timeout.
+     * Terminate destroys the tasks; the subsequent audio_pipeline_run()
+     * creates fresh ones whose open() is not on any timeout clock. */
+    audio_element_terminate(s_http_el);
+    audio_element_terminate(s_decoder_el);
     audio_pipeline_unlink(s_pipeline);
     return result;
 }
@@ -410,6 +420,22 @@ static esp_err_t start_station_locked(const char *url)
     int rate = 0, ch = 0;
     if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
         ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
+    } else if (strstr(url, ".m3u8")) {
+        /* HLS: skip probe on cache miss.
+         *
+         * After a probe of an HLS URL, a second TLS + multi-step playlist
+         * fetch (master .m3u8 → media .m3u8 → first .ts segment) must
+         * complete within dec's RESUME timeout (~4000ms) while A2DP is now
+         * active and competing with WiFi on the 2.4 GHz band.  Log 68 shows
+         * this taking >4000ms → [dec] RESUME timeout → pipeline destroyed.
+         *
+         * All tested Radio France HLS streams use AAC-LC at 44100 Hz.  Cache
+         * 44100 Hz directly so subsequent visits are instant cache hits, and
+         * run a single connection rather than probe + real-run. */
+        rate = 44100;
+        ch   = 2;
+        ESP_LOGI(TAG, "HLS stream (no cache): skipping probe, defaulting to %d Hz / %d ch", rate, ch);
+        rate_cache_put(url, rate, ch);
     } else {
         ret = probe_rate_locked(url, &rate, &ch);
         if (ret == ESP_OK) {
