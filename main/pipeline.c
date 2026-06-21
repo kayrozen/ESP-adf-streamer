@@ -435,10 +435,13 @@ static esp_err_t start_station_locked(const char *url)
     }
 
     int rate = 0, ch = 0;
-    if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
-        ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
-    } else if (new_codec == PIPELINE_CODEC_AAC) {
-        /* AAC: do NOT probe.
+    if (new_codec == PIPELINE_CODEC_AAC) {
+        /* AAC: force 48000 Hz unconditionally — do NOT read or write the cache.
+         *
+         * A stale/poisoned 44100 entry (written by an earlier probe build into
+         * the current namespace) is otherwise honoured as a cache "hit" and
+         * silently reintroduces the bug, which is exactly what happened in log 71.
+         * Bypassing the cache for AAC makes it immune to any stale entry.
          *
          * The ESP-ADF AAC decoder initializes its getinfo struct with a 44100 Hz
          * default in aac_open() before decoding any ADTS frames.  This value
@@ -458,11 +461,12 @@ static esp_err_t start_station_locked(const char *url)
          * streams (francemusique-hifi.aac, franceinter_hifi.m3u8).  The resampler
          * is then built as 48000→44100 (proper SRC), which matches the original
          * pipeline_init() default (s_rsp_src_rate = 48000 for AAC) that worked
-         * before the probe was introduced.  Cache so reboots are instant. */
+         * before the probe was introduced. */
         rate = 48000;
         ch   = 2;
-        ESP_LOGI(TAG, "AAC (no cache): defaulting to %d Hz / %d ch — caching", rate, ch);
-        rate_cache_put(url, rate, ch);
+        ESP_LOGI(TAG, "AAC: forcing %d Hz / %d ch (cache bypassed)", rate, ch);
+    } else if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
+        ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
     } else {
         /* Non-AAC (MP3): probe the decoder.  The MP3 decoder reports its rate
          * reliably via getinfo within ~100 ms of stream open (no long-lived init
