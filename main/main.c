@@ -365,8 +365,12 @@ void app_main(void)
              (esp_timer_get_time() - t_start) / 1000);
 
     /* ---- Phase D: station rotation timer (runs inside event loop thread) ---- */
+    /* DISABLED: focusing on AAC-only playback for rate/choppiness debugging.
+     * Re-enable by restoring: start_rotation_timer(); */
+    #if 0
     #if CONFIG_PROTOTYPE_PHASE_D_ROTATION
     start_rotation_timer();
+    #endif
     #endif
 
     run_event_loop();

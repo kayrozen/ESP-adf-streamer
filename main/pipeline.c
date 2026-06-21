@@ -316,31 +316,30 @@ static esp_err_t swap_rsp_element_locked(int rate, int ch)
 }
 
 /* Decode-only probe: run just http -> dec to learn the stream's true sample rate
- * before any audio reaches the BT sink.  Mirrors the "real media player" model
- * (parse the header, configure the output, then play) — see the resampler design
- * notes.  The caller MUST hold s_pipeline_mutex.
+ * before any audio reaches the BT sink.  Used only for MP3 (and future codecs
+ * that reliably report their rate via audio_element_getinfo early in playback).
  *
- * Links only {http, dec}: the decoder fills its output ring buffer with a few
- * frames and then blocks (no downstream consumer), but audio_element_getinfo()
- * already reports the real sample_rate once the decoder has opened the stream and
- * read the first frame header (~100-300 ms for Icecast, longer for HLS).
+ * WHY NOT AAC: the AAC decoder in this ADF build initializes its info struct with
+ * a 44100 Hz default in aac_open() before any ADTS frame is decoded.  The getinfo
+ * value stays at 44100 for the entire probe window (even with 600 ms stability
+ * requirement and 8 s timeout), never updating to the real bitstream rate (48000 Hz
+ * for Radio France streams).  Confirmed across logs 69 and 70: rspcache2 consistently
+ * holds 44100 for AAC URLs after a probe, resampler runs 44100→44100 (pass-through)
+ * while the decoder produces 192 KB/s (48000 Hz), L2CAP gets 192 KB/s worth of SBC
+ * frames while the radio slot timing absorbs only 176.4 KB/s → sustained is_cong
+ * bursts → choppy audio throughout.  Additionally, AEL_MSG_CMD_REPORT_MUSIC_INFO
+ * never arrives in the event loop for AAC, so event-based probing would also fail.
  *
- * CRITICAL: the AAC decoder reports a transient rate on its first parsed frame(s)
- * before settling — observed 44100 then 48000 for a true 48000 Hz stream (log 64).
- * The old rule (two consecutive equal reads, 100 ms) latched that transient and
- * cached 44100 for francemusique's 48000 Hz AAC.  The resampler was then built for
- * a 44100 Hz input while the decoder produced 48000 Hz: an 8.8 % surplus
- * (192.0 vs 176.4 KB/s) that refilled the 64 KB dec->rsp ring buffer every ~0.36 s
- * and periodically stalled the decoder — audible as steady tiny gaps throughout
- * AAC playback (the log-53 defect, reintroduced via a poisoned cache entry).
+ * AAC rate is handled in start_station_locked() with a hardcoded 48000 Hz default
+ * (matching all tested Radio France AAC streams) cached to NVS on first visit.
  *
- * Fix: require the same non-zero rate to hold for PROBE_STABLE_MS before accepting
- * it.  A brief first-frame transient cannot accumulate that much continuous
- * stability before the decoder flips to (and holds) the real rate.  Leaves the
- * pipeline STOPPED and UNLINKED so the caller can swap the resampler and relink. */
+ * MP3: the MP3 decoder reports 44100 stably within ~100 ms; probe is reliable.
+ *
+ * Leaves the pipeline STOPPED and UNLINKED (http + dec tasks terminated) so the
+ * caller can swap the resampler and relink all four elements. */
 #define PROBE_TIMEOUT_US   (8LL * 1000 * 1000)
 #define PROBE_POLL_MS      50
-#define PROBE_STABLE_MS    600   /* a rate must hold this long to be trusted */
+#define PROBE_STABLE_MS    300   /* two stable reads is enough for MP3 */
 
 static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
 {
@@ -378,7 +377,10 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
         }
         audio_element_info_t ai = {0};
         audio_element_getinfo(s_decoder_el, &ai);
+        /* Log every nonzero reading so we can trace decoder init behaviour. */
         if (ai.sample_rates > 0 && ai.channels > 0) {
+            ESP_LOGD(TAG, "Probe poll: %d Hz / %d ch  (stable_ms=%d)",
+                     ai.sample_rates, ai.channels, stable_ms);
             if (ai.sample_rates == last_rate && ai.channels == last_ch) {
                 stable_ms += PROBE_POLL_MS;
                 if (stable_ms >= PROBE_STABLE_MS) {
@@ -388,8 +390,6 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
                     break;
                 }
             } else {
-                /* New reading — restart the stability window.  This resets on the
-                 * 44100->48000 transition so only the settled rate can mature. */
                 last_rate = ai.sample_rates;
                 last_ch   = ai.channels;
                 stable_ms = 0;
@@ -419,15 +419,13 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
  *
  * Sequence:
  *   1. Recreate the decoder if the URL's codec differs from the current one.
- *   2. Determine the source rate: NVS cache hit, else a decode-only probe (which
- *      is then cached), else a codec best-guess fallback.
+ *   2. Determine the source rate: NVS cache hit; for AAC use 48000 Hz default;
+ *      for non-AAC (MP3) run the decode-only probe.
  *   3. Stop + unlink, swap the resampler to the known rate, link all four, run.
  *
  * Because the rate is known before the audio path (rsp -> bt) is ever linked,
  * there is no wrong-rate / wrong-pitch window: the first PCM that reaches the SBC
- * encoder is already at the correct rate.  Cost on a cache miss is one extra
- * HTTP/TLS connect for the probe; cache hits (the steady state, including across
- * reboots) start in a single connect exactly as before. */
+ * encoder is already at the correct rate. */
 static esp_err_t start_station_locked(const char *url)
 {
     pipeline_codec_t new_codec = detect_codec_from_url(url);
@@ -439,22 +437,42 @@ static esp_err_t start_station_locked(const char *url)
     int rate = 0, ch = 0;
     if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
         ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
+    } else if (new_codec == PIPELINE_CODEC_AAC) {
+        /* AAC: do NOT probe.
+         *
+         * The ESP-ADF AAC decoder initializes its getinfo struct with a 44100 Hz
+         * default in aac_open() before decoding any ADTS frames.  This value
+         * persists in getinfo for the entire probe window (confirmed across two
+         * firmware versions and two stability thresholds — 100 ms and 600 ms —
+         * in logs 69 and 70), so any getinfo-based probe consistently caches 44100
+         * for what is actually a 48000 Hz stream.  The resampler then runs as a
+         * 44100→44100 pass-through while the decoder produces 192 KB/s (48000 Hz
+         * PCM), overfeeding the BT sink (which absorbs only 176.4 KB/s at 44100 Hz
+         * SBC) → sustained L2CAP is_cong bursts → steady choppy audio.
+         *
+         * AEL_MSG_CMD_REPORT_MUSIC_INFO is also never delivered for AAC in this
+         * ADF build (confirmed: no "Stream info —" line in any log), ruling out
+         * an event-based probe as well.
+         *
+         * Default to 48000 Hz — the correct rate for all tested Radio France AAC
+         * streams (francemusique-hifi.aac, franceinter_hifi.m3u8).  The resampler
+         * is then built as 48000→44100 (proper SRC), which matches the original
+         * pipeline_init() default (s_rsp_src_rate = 48000 for AAC) that worked
+         * before the probe was introduced.  Cache so reboots are instant. */
+        rate = 48000;
+        ch   = 2;
+        ESP_LOGI(TAG, "AAC (no cache): defaulting to %d Hz / %d ch — caching", rate, ch);
+        rate_cache_put(url, rate, ch);
     } else {
-        /* Cache miss: probe the decoder for the true rate.  This now covers HLS
-         * too — the earlier HLS-skip workaround (hardcoding 44100) guessed the
-         * rate and would mis-build the resampler for a 48000 Hz HLS stream,
-         * causing the same steady-gap defect we are fixing for francemusique.
-         * The probe's RESUME-timeout hazard on the following real run is resolved
-         * by terminating http+dec after the probe (see probe_rate_locked): the
-         * real run creates fresh tasks, so a slow second HLS connect no longer
-         * trips dec's RESUME timeout.  Cost on an HLS cache miss is two connect
-         * sequences (probe + real), one-time per URL until cached. */
+        /* Non-AAC (MP3): probe the decoder.  The MP3 decoder reports its rate
+         * reliably via getinfo within ~100 ms of stream open (no long-lived init
+         * default), making getinfo-based probing accurate and fast for MP3. */
         ret = probe_rate_locked(url, &rate, &ch);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "Probe learned %d Hz / %d ch — caching", rate, ch);
             rate_cache_put(url, rate, ch);
         } else {
-            rate = (new_codec == PIPELINE_CODEC_AAC) ? 48000 : 44100;
+            rate = 44100;
             ch   = 2;
             ESP_LOGW(TAG, "Probe failed (%d) — falling back to %d Hz / %d ch", ret, rate, ch);
         }
