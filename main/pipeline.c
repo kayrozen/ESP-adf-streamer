@@ -1,8 +1,11 @@
 #include <string.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "nvs.h"
 #include "audio_pipeline.h"
 #include "audio_element.h"
 #include "audio_event_iface.h"
@@ -56,21 +59,32 @@ static SemaphoreHandle_t s_pipeline_mutex = NULL;
  * that is registered right now).  The resampler is never reconfigured in place —
  * rsp_filter_set_src_info() destroys and rebuilds the internal SRC handle and was
  * the source of the deterministic vQueueDelete(NULL) crash (logs 54/55/56).
- * Instead, when the decoder reports a rate that differs from this, the whole
- * rsp_filter element is hot-swapped for a fresh one created at the new rate via
- * the proven init path (see pipeline_recreate_resample).
+ * Instead the whole rsp_filter element is hot-swapped for a fresh one created at
+ * the new rate via the proven init path (see swap_rsp_element_locked).
  *
- * Set in pipeline_init() to the boot codec's expected rate.  The element keeps
- * its src_rate across audio_pipeline_reset_elements() (a station change re-opens
- * the same element with the same cfg), so this stays valid across station changes
- * and a same-rate switch needs no rebuild. */
+ * Set in pipeline_init() to the boot codec's expected rate, then updated by
+ * start_station_locked() once the true decoded rate is known (from the NVS cache
+ * or a decode-only probe).  Used as the no-op guard in swap_rsp_element_locked():
+ * a station whose rate already matches needs no rebuild. */
 static int s_rsp_src_rate = 48000;
 static int s_rsp_src_ch   = 2;
 
+/* ---- Per-URL resample-rate cache (NVS) ----
+ *
+ * The decoder only learns a stream's true sample rate after it opens and reads
+ * the first frame header.  Rather than guess the rate from the URL (the old race:
+ * a wrong guess played at the wrong pitch until a watcher rebuilt the resampler
+ * mid-stream), we run a decode-only probe on the first visit to each URL, learn
+ * the real rate before any audio reaches the BT sink, and persist it here.  On
+ * every later visit (including across reboots) the cache hit skips the probe and
+ * the resampler is built correct the first time — zero wrong-rate audio. */
+#define RSP_CACHE_NS  "rspcache"
+
 /* Forward declarations for static functions used before their definition */
 static esp_err_t pipeline_recreate_decoder(pipeline_codec_t new_codec);
-static esp_err_t pipeline_recreate_resample(int src_rate, int src_ch);
 static audio_element_handle_t create_resample_filter(int src_rate, int src_ch);
+static pipeline_codec_t detect_codec_from_url(const char *url);
+static esp_err_t start_station_locked(const char *url);
 
 /* ---- helpers ---- */
 
@@ -168,10 +182,10 @@ static audio_element_handle_t create_resample_filter(int src_rate, int src_ch)
      *
      * rsp_filter does NOT learn the upstream rate on its own (ADF elements only
      * exchange raw PCM through ring buffers).  We cannot know an arbitrary stream's
-     * rate until the decoder opens it, so the element is created at a best-guess
-     * src_rate (from the URL's codec) and, if the decoder later reports a different
-     * rate, the element is hot-swapped for a fresh one built at the real rate —
-     * see pipeline_recreate_resample().  We deliberately do NOT call
+     * rate until the decoder opens it, so the element is created at the rate learned
+     * from the NVS cache or the decode-only probe (see start_station_locked), and is
+     * hot-swapped for a fresh one if a later station needs a different rate —
+     * see swap_rsp_element_locked().  We deliberately do NOT call
      * rsp_filter_set_src_info() at runtime: it tears down and rebuilds the internal
      * SRC handle and was the source of the deterministic vQueueDelete(NULL) crash
      * (logs 54/55/56).  Every working ADF resample example configures the rate at
@@ -194,97 +208,239 @@ static audio_element_handle_t create_resample_filter(int src_rate, int src_ch)
     return rsp_filter_init(&cfg);
 }
 
-/* Hot-swap the rsp_filter element for a fresh one built at (src_rate, src_ch).
+/* ---- NVS rate cache ----
  *
- * Mirrors pipeline_recreate_decoder() but, because it is called mid-stream from
- * the format watcher (not before the initial run), it restarts the pipeline at
- * the end.  The caller MUST hold s_pipeline_mutex.  On any failure the old
- * element is restored and the pipeline is restarted so playback continues. */
-static esp_err_t pipeline_recreate_resample(int src_rate, int src_ch)
+ * NVS keys are limited to 15 chars, so a URL cannot be a key directly.  Hash the
+ * URL (FNV-1a 32-bit) and format it as "u" + 8 hex digits (9 chars).  The stored
+ * value packs rate (lower 24 bits, max 48000) and channels (top 8 bits). */
+static void rate_cache_key(const char *url, char out[12])
 {
-    audio_element_handle_t new_rsp = create_resample_filter(src_rate, src_ch);
-    if (!new_rsp) {
-        ESP_LOGE(TAG, "Failed to create resample filter for %d Hz / %d ch", src_rate, src_ch);
-        return ESP_FAIL;
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)url; *p; p++) {
+        h ^= *p;
+        h *= 16777619u;
     }
-
-    /* Keep the old element until the new one is fully linked, for rollback. */
-    audio_element_handle_t old_rsp = s_resample_el;
-    const char *link_tag[] = {"http", "dec", "rsp", "bt"};
-
-    audio_pipeline_stop(s_pipeline);
-    audio_pipeline_wait_for_stop(s_pipeline);
-    audio_pipeline_unlink(s_pipeline);
-    audio_pipeline_unregister(s_pipeline, old_rsp);
-
-    s_resample_el = new_rsp;
-    esp_err_t ret = audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register new resampler: %d — rolling back", ret);
-        s_resample_el = old_rsp;
-        audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
-        audio_pipeline_link(s_pipeline, link_tag, 4);
-        audio_pipeline_reset_ringbuffer(s_pipeline);
-        audio_pipeline_reset_elements(s_pipeline);
-        audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
-        audio_pipeline_run(s_pipeline);
-        audio_element_deinit(new_rsp);
-        return ret;
-    }
-
-    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to relink after resampler swap: %d — rolling back", ret);
-        s_resample_el = old_rsp;
-        audio_pipeline_unregister(s_pipeline, new_rsp);
-        audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
-        audio_pipeline_link(s_pipeline, link_tag, 4);
-        audio_pipeline_reset_ringbuffer(s_pipeline);
-        audio_pipeline_reset_elements(s_pipeline);
-        audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
-        audio_pipeline_run(s_pipeline);
-        audio_element_deinit(new_rsp);
-        return ret;
-    }
-
-    /* Success: new resampler is linked. Now safe to deinit the old one. */
-    audio_element_deinit(old_rsp);
-
-    /* Restart the pipeline from a clean state (same sequence as a station change). */
-    audio_pipeline_reset_ringbuffer(s_pipeline);
-    audio_pipeline_reset_elements(s_pipeline);
-    audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
-    ret = audio_pipeline_run(s_pipeline);
-    ESP_LOGI(TAG, "Resampler rebuilt: %d Hz / %d ch -> 44100 Hz / 2 ch", src_rate, src_ch);
-    return ret;
+    snprintf(out, 12, "u%08lx", (unsigned long)h);
 }
 
-esp_err_t pipeline_set_resample_src_info(int rate, int ch)
+static esp_err_t rate_cache_get(const char *url, int *rate, int *ch)
 {
-    if (!s_resample_el) {
-        return ESP_ERR_INVALID_STATE;
+    nvs_handle_t nvs;
+    if (nvs_open(RSP_CACHE_NS, NVS_READONLY, &nvs) != ESP_OK) {
+        return ESP_FAIL;  /* namespace absent until first put — treat as miss */
     }
-    if (rate <= 0 || ch <= 0) {
-        return ESP_ERR_INVALID_ARG;
+    char key[12];
+    rate_cache_key(url, key);
+    uint32_t v = 0;
+    esp_err_t ret = nvs_get_u32(nvs, key, &v);
+    nvs_close(nvs);
+    if (ret != ESP_OK) return ret;
+    *rate = (int)(v & 0x00FFFFFF);
+    *ch   = (int)((v >> 24) & 0xFF);
+    if (*rate <= 0 || *ch <= 0) return ESP_FAIL;
+    return ESP_OK;
+}
+
+static void rate_cache_put(const char *url, int rate, int ch)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(RSP_CACHE_NS, NVS_READWRITE, &nvs) != ESP_OK) return;
+    char key[12];
+    rate_cache_key(url, key);
+    uint32_t v = ((uint32_t)rate & 0x00FFFFFF) | (((uint32_t)ch & 0xFF) << 24);
+    if (nvs_set_u32(nvs, key, v) == ESP_OK) {
+        nvs_commit(nvs);
     }
-    /* No change vs the rate the current element was built for — nothing to do.
-     * This is the common case: the boot/station codec guess matched the real
-     * decoded rate, so the resampler is already correct and no rebuild happens. */
+    nvs_close(nvs);
+}
+
+/* Stop the pipeline only if it is actually running.
+ *
+ * audio_pipeline_wait_for_stop() blocks listening for stop reports from running
+ * element tasks; on a freshly-linked pipeline that has never been run (e.g. the
+ * boot path, before the very first audio_pipeline_run) no tasks exist to report,
+ * so an unconditional stop+wait could hang.  http is element 0 in every linked
+ * config and always runs, so its state is a reliable "is the pipeline active?"
+ * proxy.  Only stop when it is RUNNING/PAUSED. */
+static void pipeline_stop_if_running(void)
+{
+    audio_element_state_t st = audio_element_get_state(s_http_el);
+    if (st == AEL_STATE_RUNNING || st == AEL_STATE_PAUSED) {
+        audio_pipeline_stop(s_pipeline);
+        audio_pipeline_wait_for_stop(s_pipeline);
+    }
+}
+
+/* Hot-swap the rsp_filter element for a fresh one built at (rate, ch).
+ *
+ * Precondition: the pipeline is STOPPED and UNLINKED (the caller does the stop/
+ * unlink as part of the full restart sequence).  This only re-registers the rsp
+ * element; it does NOT link or run — start_station_locked() does that for all
+ * four elements afterward.  No-op (and keeps the existing element) when the rate
+ * already matches.  On failure the old element is restored and left registered so
+ * the caller's link()/run() still produces playback (at the wrong rate, logged).
+ * The caller MUST hold s_pipeline_mutex. */
+static esp_err_t swap_rsp_element_locked(int rate, int ch)
+{
     if (rate == s_rsp_src_rate && ch == s_rsp_src_ch) {
         return ESP_OK;
     }
 
-    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        ESP_LOGE(TAG, "Failed to take pipeline mutex for resampler rebuild");
-        return ESP_ERR_TIMEOUT;
+    audio_element_handle_t new_rsp = create_resample_filter(rate, ch);
+    if (!new_rsp) {
+        ESP_LOGE(TAG, "Failed to create resample filter for %d Hz / %d ch", rate, ch);
+        return ESP_FAIL;
     }
-    esp_err_t ret = pipeline_recreate_resample(rate, ch);
-    if (ret == ESP_OK) {
-        s_rsp_src_rate = rate;
-        s_rsp_src_ch   = ch;
+
+    audio_element_handle_t old_rsp = s_resample_el;
+    audio_pipeline_unregister(s_pipeline, old_rsp);
+    s_resample_el = new_rsp;
+    esp_err_t ret = audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register new resampler: %d — keeping old element", ret);
+        s_resample_el = old_rsp;
+        audio_pipeline_register(s_pipeline, s_resample_el, "rsp");
+        audio_element_deinit(new_rsp);
+        return ret;
     }
-    xSemaphoreGive(s_pipeline_mutex);
-    return ret;
+
+    audio_element_deinit(old_rsp);
+    s_rsp_src_rate = rate;
+    s_rsp_src_ch   = ch;
+    ESP_LOGI(TAG, "Resampler built for %d Hz / %d ch -> 44100 Hz / 2 ch", rate, ch);
+    return ESP_OK;
+}
+
+/* Decode-only probe: run just http -> dec to learn the stream's true sample rate
+ * before any audio reaches the BT sink.  Mirrors the "real media player" model
+ * (parse the header, configure the output, then play) — see the resampler design
+ * notes.  The caller MUST hold s_pipeline_mutex.
+ *
+ * Links only {http, dec}: the decoder fills its output ring buffer with a few
+ * frames and then blocks (no downstream consumer), but audio_element_getinfo()
+ * already reports the real sample_rate once the decoder has opened the stream and
+ * read the first frame header (~100-300 ms for Icecast, longer for HLS).  We
+ * require two consecutive equal non-zero reads to ride out the AAC decoder's
+ * transient first-poll rate (log 64: 44100 then 48000).  Leaves the pipeline
+ * STOPPED and UNLINKED so the caller can swap the resampler and relink all four. */
+#define PROBE_TIMEOUT_US   (5LL * 1000 * 1000)
+#define PROBE_POLL_MS      50
+
+static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
+{
+    pipeline_stop_if_running();
+    audio_pipeline_unlink(s_pipeline);
+
+    audio_element_set_uri(s_http_el, url);
+
+    const char *probe_tag[] = {"http", "dec"};
+    esp_err_t ret = audio_pipeline_link(s_pipeline, probe_tag, 2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Probe link failed: %d", ret);
+        return ret;
+    }
+    audio_pipeline_reset_ringbuffer(s_pipeline);
+    audio_pipeline_reset_elements(s_pipeline);
+    audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
+    ret = audio_pipeline_run(s_pipeline);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Probe run failed: %d", ret);
+        audio_pipeline_unlink(s_pipeline);
+        return ret;
+    }
+
+    int last_rate = -1, last_ch = -1, stable = 0;
+    esp_err_t result = ESP_ERR_TIMEOUT;
+    int64_t t0 = esp_timer_get_time();
+    while ((esp_timer_get_time() - t0) < PROBE_TIMEOUT_US) {
+        /* Bail early if http hit a hard error (dead URL / 4xx) — the decoder will
+         * never produce a rate, so don't burn the full timeout. */
+        if (audio_element_get_state(s_http_el) == AEL_STATE_ERROR) {
+            ESP_LOGW(TAG, "Probe: http element entered error state");
+            result = ESP_FAIL;
+            break;
+        }
+        audio_element_info_t ai = {0};
+        audio_element_getinfo(s_decoder_el, &ai);
+        if (ai.sample_rates > 0 && ai.channels > 0) {
+            if (ai.sample_rates == last_rate && ai.channels == last_ch) {
+                if (++stable >= 2) {
+                    *out_rate = ai.sample_rates;
+                    *out_ch   = ai.channels;
+                    result = ESP_OK;
+                    break;
+                }
+            } else {
+                last_rate = ai.sample_rates;
+                last_ch   = ai.channels;
+                stable    = 1;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(PROBE_POLL_MS));
+    }
+
+    pipeline_stop_if_running();
+    audio_pipeline_unlink(s_pipeline);
+    return result;
+}
+
+/* Bring the pipeline up on `url` with the resampler built for the stream's true
+ * decoded rate.  Single entry point for both the boot start and every station
+ * change.  The caller MUST hold s_pipeline_mutex.
+ *
+ * Sequence:
+ *   1. Recreate the decoder if the URL's codec differs from the current one.
+ *   2. Determine the source rate: NVS cache hit, else a decode-only probe (which
+ *      is then cached), else a codec best-guess fallback.
+ *   3. Stop + unlink, swap the resampler to the known rate, link all four, run.
+ *
+ * Because the rate is known before the audio path (rsp -> bt) is ever linked,
+ * there is no wrong-rate / wrong-pitch window: the first PCM that reaches the SBC
+ * encoder is already at the correct rate.  Cost on a cache miss is one extra
+ * HTTP/TLS connect for the probe; cache hits (the steady state, including across
+ * reboots) start in a single connect exactly as before. */
+static esp_err_t start_station_locked(const char *url)
+{
+    pipeline_codec_t new_codec = detect_codec_from_url(url);
+    esp_err_t ret = pipeline_recreate_decoder(new_codec);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    int rate = 0, ch = 0;
+    if (rate_cache_get(url, &rate, &ch) == ESP_OK) {
+        ESP_LOGI(TAG, "Rate cache hit: %d Hz / %d ch", rate, ch);
+    } else {
+        ret = probe_rate_locked(url, &rate, &ch);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Probe learned %d Hz / %d ch — caching", rate, ch);
+            rate_cache_put(url, rate, ch);
+        } else {
+            rate = (new_codec == PIPELINE_CODEC_AAC) ? 48000 : 44100;
+            ch   = 2;
+            ESP_LOGW(TAG, "Probe failed (%d) — falling back to %d Hz / %d ch", ret, rate, ch);
+        }
+    }
+
+    /* Full restart at the known rate.  Stop+unlink first: after a cache hit the
+     * pipeline may still be running the previous station; after a probe it is
+     * already stopped+unlinked; at boot it has never run (stop_if_running skips). */
+    pipeline_stop_if_running();
+    audio_pipeline_unlink(s_pipeline);
+
+    swap_rsp_element_locked(rate, ch);  /* best-effort; logs and keeps old rsp on failure */
+
+    const char *link_tag[] = {"http", "dec", "rsp", "bt"};
+    ret = audio_pipeline_link(s_pipeline, link_tag, 4);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Pipeline link failed: %d", ret);
+        return ret;
+    }
+    audio_element_set_uri(s_http_el, url);
+    audio_pipeline_reset_ringbuffer(s_pipeline);
+    audio_pipeline_reset_elements(s_pipeline);
+    audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
+    return audio_pipeline_run(s_pipeline);
 }
 
 /* Create decoder based on codec type */
@@ -358,11 +514,11 @@ esp_err_t pipeline_init(const uint8_t peer_bda[6], const char *boot_url)
      * diagnosing AAC audio corruption. */
     pipeline_codec_t boot_codec = boot_url ? detect_codec_from_url(boot_url)
                                            : PIPELINE_CODEC_MP3;
-    /* Best-guess source rate from the boot codec so the resampler is built right
-     * the first time and the format watcher's first fire is a no-op for the common
-     * case (AAC streams are 48000 Hz, MP3 typically 44100 Hz).  If the real decoded
-     * rate differs, the watcher rebuilds the element once via
-     * pipeline_recreate_resample(). */
+    /* Best-guess source rate from the boot codec for the element created here.
+     * pipeline_start() immediately re-derives the true rate (NVS cache or probe)
+     * and rebuilds the element via swap_rsp_element_locked() if this guess is
+     * wrong, so it only needs to be a sane non-identity default (a 1:1 rate would
+     * leave the SRC handle NULL — see create_resample_filter). */
     s_rsp_src_rate = (boot_codec == PIPELINE_CODEC_AAC) ? 48000 : 44100;
     s_rsp_src_ch   = 2;
     s_http_el      = create_http_stream();
@@ -437,23 +593,20 @@ esp_err_t pipeline_start(const char *url)
 {
     if (!s_pipeline || !url) return ESP_ERR_INVALID_STATE;
 
-    /* Detect codec from URL and switch decoder if needed */
-    pipeline_codec_t new_codec = detect_codec_from_url(url);
-    if (new_codec != s_current_codec) {
-        ESP_LOGI(TAG, "Codec change detected: %d -> %d", s_current_codec, new_codec);
-        esp_err_t ret = pipeline_recreate_decoder(new_codec);
-        if (ret != ESP_OK) {
-            return ret;
-        }
+    /* Boot start runs through the same probe/cache path as a station change so the
+     * resampler is built for station 0's true rate before any audio is produced.
+     * The mutex acquire window covers the probe (up to PROBE_TIMEOUT_US); at boot
+     * the event loop has not started yet so there is no real contention. */
+    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to take pipeline mutex for pipeline_start");
+        return ESP_ERR_TIMEOUT;
     }
-
-    audio_element_set_uri(s_http_el, url);
     ESP_LOGI(TAG, "Starting pipeline -> %s", url);
-
-    esp_err_t ret = audio_pipeline_run(s_pipeline);
+    esp_err_t ret = start_station_locked(url);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "audio_pipeline_run failed: %d", ret);
+        ESP_LOGE(TAG, "pipeline_start failed: %d", ret);
     }
+    xSemaphoreGive(s_pipeline_mutex);
     return ret;
 }
 
@@ -524,43 +677,23 @@ esp_err_t pipeline_change_station(const char *new_url)
 {
     if (!s_pipeline || !new_url) return ESP_ERR_INVALID_STATE;
 
-    /* Take mutex to prevent concurrent access with event loop */
-    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    /* Take mutex to prevent concurrent access with event loop.  The window covers
+     * the decode-only probe on a cache miss (up to PROBE_TIMEOUT_US), so allow a
+     * generous acquire timeout. */
+    if (xSemaphoreTake(s_pipeline_mutex, pdMS_TO_TICKS(10000)) != pdTRUE) {
         ESP_LOGE(TAG, "Failed to take pipeline mutex for station change");
         return ESP_ERR_TIMEOUT;
     }
 
     ESP_LOGI(TAG, "Changing station -> %s", new_url);
 
-    /* NOTE: do NOT invalidate s_rsp_src_rate/ch here.  The rsp_filter element is
-     * kept across the station change (reset_elements re-opens the SAME element with
-     * the SAME cfg), so it retains the src_rate it was built for.  The cache stays
-     * accurate, which makes a same-rate station change a no-op for the resampler
-     * (no needless rebuild).  If the new stream's decoded rate actually differs,
-     * the format watcher calls pipeline_set_resample_src_info(), which rebuilds the
-     * element via pipeline_recreate_resample().  The watcher itself is re-armed for
-     * every station change in restart_pipeline_station() (main.c). */
+    /* start_station_locked() keeps all elements initialized (never terminates the
+     * pipeline), so the A2DP connection survives the change.  It learns the new
+     * stream's true rate from the NVS cache or a probe and builds the resampler for
+     * it before linking the rsp -> bt audio path — so there is no wrong-rate window
+     * and no mid-stream resampler rebuild. */
+    esp_err_t ret = start_station_locked(new_url);
 
-    /* Detect codec and recreate decoder if needed */
-    pipeline_codec_t new_codec = detect_codec_from_url(new_url);
-    esp_err_t ret = pipeline_recreate_decoder(new_codec);
-    if (ret != ESP_OK) {
-        xSemaphoreGive(s_pipeline_mutex);
-        return ret;
-    }
-
-    /* Stop the pipeline but keep elements initialized to preserve A2DP connection.
-     * Do NOT call audio_pipeline_terminate() — that deinitializes all elements
-     * including the A2DP stream, which drops the Bluetooth connection. */
-    audio_pipeline_stop(s_pipeline);
-    audio_pipeline_wait_for_stop(s_pipeline);
-
-    audio_element_set_uri(s_http_el, new_url);
-    audio_pipeline_reset_ringbuffer(s_pipeline);
-    audio_pipeline_reset_elements(s_pipeline);
-    audio_pipeline_change_state(s_pipeline, AEL_STATE_INIT);
-
-    ret = audio_pipeline_run(s_pipeline);
     xSemaphoreGive(s_pipeline_mutex);
     return ret;
 }

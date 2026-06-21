@@ -61,21 +61,6 @@ void pipeline_deinit(void);
 audio_event_iface_handle_t pipeline_get_event_iface(void);
 
 /**
- * Update the resample filter's source sample rate / channel count.
- *
- * ESP-ADF audio elements are decoupled and exchange only raw PCM bytes through
- * ring buffers, so rsp_filter does NOT learn the decoder's output rate on its
- * own — it keeps the src_rate it was configured with. The caller must push the
- * decoder's real format here whenever it changes (e.g. MP3 44100 Hz vs AAC
- * 48000 Hz) so the resampler actually converts to the fixed 44100 Hz the JBL
- * SBC link negotiated. A no-op if rate/ch match the resampler's current source.
- *
- * @param rate  decoded PCM sample rate in Hz (from audio_element_getinfo)
- * @param ch    decoded PCM channel count
- */
-esp_err_t pipeline_set_resample_src_info(int rate, int ch);
-
-/**
  * Get the decoder element handle (for stall detection via audio_element_getinfo).
  * The decoder's byte_pos advances as PCM is produced and freezes on both a
  * network stall (input starvation) and an A2DP stall (downstream backpressure),

@@ -44,36 +44,13 @@ static int s_current_station = 0;
  * permanent failures like HTTP 4xx or CDN hangs (BBC 410, HLS .ts timeout). */
 static int s_station_error_count = 0;
 
-/* Decoded-PCM format watcher state (see run_event_loop). Tracks the last decoder
- * format seen so the resampler is re-armed only when the rate/channels change.
- * File-scope so restart_pipeline_station() can clear it: a station change resets
- * the pipeline elements (reverting the resampler toward its 44100 Hz default), so
- * the watcher must forget the previous format and re-push — even when the new
- * station shares the same sample rate (e.g. 48000 Hz AAC -> 48000 Hz AAC). */
-static int s_fmt_logged_rate = -1;
-static int s_fmt_logged_ch   = -1;
-
-/* Format-watcher debounce: the AAC decoder reports a transient sample_rate on its
- * very first getinfo() poll (log 64: 44100 Hz before settling to 48000 Hz), which
- * triggers a spurious resampler rebuild and TLS reconnect.  Require the same rate
- * to be seen on 2 consecutive polls (~1 s at the 500 ms listen timeout) before
- * rebuilding.  Cleared on every station change so a fresh stream starts clean. */
-static int s_fmt_pending_rate  = -1;
-static int s_fmt_pending_ch    = -1;
-static int s_fmt_pending_count =  0;
-#define FMT_DEBOUNCE_POLLS 2
-
-/* Restart streaming on a (possibly new) URL, clearing the format watcher first so
- * the resampler is reconfigured for the new stream. ALL station-change / restart
- * paths must go through this rather than calling pipeline_change_station directly,
- * otherwise a same-sample-rate transition would leave the resampler misconfigured. */
+/* Restart streaming on a (possibly new) URL.  Thin wrapper kept so every restart
+ * path funnels through one place.  pipeline_change_station() now learns the
+ * stream's true sample rate (NVS cache or decode-only probe) and builds the
+ * resampler for it before the audio path is linked, so there is no format state
+ * to clear here — the old decoded-PCM watcher and its debounce are gone. */
 static esp_err_t restart_pipeline_station(const char *url)
 {
-    s_fmt_logged_rate   = -1;
-    s_fmt_logged_ch     = -1;
-    s_fmt_pending_rate  = -1;
-    s_fmt_pending_ch    = -1;
-    s_fmt_pending_count =  0;
     return pipeline_change_station(url);
 }
 
@@ -174,15 +151,6 @@ static void run_event_loop(void)
     uint64_t stall_last_bytes = 0;
     int64_t  stall_since_us   = esp_timer_get_time();
 
-    /* Decoded-PCM format watcher. The REPORT_MUSIC_INFO event only reliably
-     * fires for the very first stream (it is swallowed for later stations after
-     * a decoder hot-swap), so the AAC stations never logged their decoded
-     * format. Corrupt audio with clean delivery (choppy / white noise but no
-     * underflows) is classically a sample-rate or channel mismatch handed to
-     * the SBC encoder, so log the format directly from the decoder whenever it
-     * changes. State lives at file scope (s_fmt_logged_*) so it can be cleared
-     * on every station change via restart_pipeline_station(). */
-
     ESP_LOGI(TAG, "Entering event loop …");
     while (true) {
         audio_event_iface_msg_t msg;
@@ -209,44 +177,6 @@ static void run_event_loop(void)
                 if (audio_element_get_state(dec_el) == AEL_STATE_RUNNING) {
                     audio_element_info_t ai = {0};
                     audio_element_getinfo(dec_el, &ai);
-                    if (ai.sample_rates > 0 && ai.channels > 0 &&
-                        (ai.sample_rates != s_fmt_logged_rate ||
-                         ai.channels    != s_fmt_logged_ch)) {
-                        /* Debounce: the AAC decoder's first getinfo() often reports
-                         * a transient rate (e.g. 44100 Hz) before settling on the
-                         * real one (48000 Hz).  Acting on the first poll triggers a
-                         * spurious resampler rebuild + TLS reconnect (log 64).
-                         * Require FMT_DEBOUNCE_POLLS consecutive polls at the same
-                         * rate before pushing to the resampler. */
-                        if (ai.sample_rates == s_fmt_pending_rate &&
-                            ai.channels     == s_fmt_pending_ch) {
-                            s_fmt_pending_count++;
-                        } else {
-                            s_fmt_pending_rate  = ai.sample_rates;
-                            s_fmt_pending_ch    = ai.channels;
-                            s_fmt_pending_count = 1;
-                        }
-                        if (s_fmt_pending_count >= FMT_DEBOUNCE_POLLS) {
-                            ESP_LOGW(TAG, "Decoder PCM format — codec:%d  sample_rate:%d  channels:%d  bits:%d",
-                                     ai.codec_fmt, ai.sample_rates, ai.channels, ai.bits);
-                            /* Push the decoder's real output rate to the resampler.
-                             * rsp_filter cannot learn it on its own (elements only
-                             * exchange raw PCM via ring buffers), so without this the
-                             * resampler stays at its 44100 Hz default and 1:1 passes
-                             * 48000 Hz AAC through — the very mismatch this stage is
-                             * meant to remove.  This polling watcher is the reliable
-                             * hook: REPORT_MUSIC_INFO is swallowed after a hot-swap.
-                             *
-                             * Update tracked state ONLY on success: if the call fails
-                             * (e.g. pipeline mutex timeout), leaving the logged vars
-                             * unchanged lets the next poll retry rather than silently
-                             * locking in a misconfigured resampler for the stream. */
-                            if (pipeline_set_resample_src_info(ai.sample_rates, ai.channels) == ESP_OK) {
-                                s_fmt_logged_rate = ai.sample_rates;
-                                s_fmt_logged_ch   = ai.channels;
-                            }
-                        }
-                    }
                     uint64_t cur_bytes = (uint64_t)ai.byte_pos;
                     if (cur_bytes != stall_last_bytes) {
                         stall_last_bytes = cur_bytes;
