@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -847,7 +848,7 @@ void pipeline_log_diag(void)
     int rsp_fill = rsp_rb ? rb_bytes_filled(rsp_rb) : -1;
     int rsp_size = rsp_rb ? rb_get_size(rsp_rb)     : -1;
 
-    ESP_LOGI(TAG, "DIAG dec=%dHz/%dch  throughput=%uKB/s  dec_rb=%d/%d  rsp_rb=%d/%d (%d%%)",
+    ESP_LOGI(TAG, "DIAG dec=%dHz/%dch  throughput=%" PRIu32 "KB/s  dec_rb=%d/%d  rsp_rb=%d/%d (%d%%)",
              dai.sample_rates, dai.channels, kbps,
              dec_fill, dec_size, rsp_fill, rsp_size,
              rsp_size > 0 ? (rsp_fill * 100 / rsp_size) : -1);
