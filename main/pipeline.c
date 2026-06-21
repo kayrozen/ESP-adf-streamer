@@ -131,12 +131,16 @@ static audio_element_handle_t create_http_stream(void)
      * correct (Core 1 has 42% idle, and keeping the I/O task off the radio core
      * costs nothing).  Kept as-is. */
     cfg.task_core         = 1;
-    /* Compressed-side jitter buffer. 64KB ≈ 4s of 128kbps MP3. Lives in PSRAM
-     * (>16KB SPIRAM_MALLOC_ALWAYSINTERNAL threshold), so it costs no internal
-     * DRAM — and moving it out of internal actually frees the old 4KB. Lets the
-     * decoder burst-refill from the socket backlog faster than real-time after
-     * a BT/WiFi coexistence stall, instead of starving on a 4KB input. */
-    cfg.out_rb_size       = 64 * 1024;
+    /* Compressed-side jitter buffer. 512KB ≈ 34s @ 120kbps AAC / 32s @ 128kbps MP3.
+     * Lives in PSRAM. Sized to absorb two independent gap sources:
+     *   1. WiFi MIN_MODEM sleep: ~102ms per cycle → 15KB/s × 0.1s = 1.5KB per gap
+     *   2. Icecast server chunk gaps: ~1.4s every 11s → 15KB/s × 1.4s = 21KB
+     * The old 64KB buffer drained to near-zero in ~20s under MAX_MODEM li=3 (307ms
+     * WiFi sleeps) because the decoder's consumption (16KB/s) slightly exceeds the
+     * average HTTP delivery rate during sleep gaps.  Once empty, every 300ms WiFi
+     * cycle caused audible dropout (confirmed by DIAG: dec_rb=0, rsp_rb=0% during
+     * 1320ms gap at t=74685-76005, log c78fe5b5).  512KB provides 34s headroom. */
+    cfg.out_rb_size       = 512 * 1024;
     return http_stream_init(&cfg);
 }
 
