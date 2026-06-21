@@ -39,26 +39,33 @@ static const char *TAG = "pipeline";
  * resampler on rsp_filter.out_rb, so only a small hop is needed here. */
 #define DECODER_TO_RSP_RB_SIZE  (64 * 1024)
 
-/* Startup prebuffer gate.
+/* Startup prebuffer gate — COMPRESSED side.
  *
- * Internet-radio servers (Icecast) deliver the stream at real-time playback
- * rate after an initial burst-on-connect.  Because the a2dp sink drains the PCM
- * jitter buffer (rsp.out_rb) at exactly real-time, the buffer can NEVER build a
- * reserve once playback is running — every diagnostic in logs c78fe5b5/ec04c504
- * showed rsp_rb pinned at 0% for the whole session, so a single WiFi sleep
- * window (307 ms) or an Icecast inter-chunk gap (~1.4 s, recurring every ~11 s)
- * instantly starved the sink → choppy audio.
+ * History: the first prebuffer design (logs c9b24125) paused the *a2dp sink* and
+ * primed the PCM jitter buffer (rsp.out_rb) to 75%.  It made things WORSE, for
+ * two reasons that the ESP-IDF tracker and our logs both confirm:
  *
- * The fix: pause the a2dp sink immediately after audio_pipeline_run() and let
- * http→dec→rsp accumulate a reserve in rsp.out_rb (fed by the server's
- * burst-on-connect plus whatever the socket can pull ahead of real-time) before
- * letting the sink start draining.  Once primed, the sink drains into a full
- * buffer and the recurring gaps are absorbed.
+ *   1. rsp.out_rb cannot self-heal.  Its consumer (the BT A2DP source) is
+ *      rate-locked at exactly 176.4 KB/s, so once the level drops below
+ *      equilibrium there is no over-speed to refill it.  Priming it just delays
+ *      the inevitable drain to 0%.
+ *   2. Pausing the sink is actively harmful.  espressif/esp-idf#3407 reports that
+ *      suspending an A2DP stream past the suspend threshold and resuming CAUSES
+ *      glitches, and the BT media timer accrues debt during the pause → a
+ *      catch-up over-speed burst on resume → an L2CAP is_cong storm (7 events at
+ *      resume in c9b24125) that drained the primed buffer in <6 s.
  *
- * Target 75% of the 512 KB PCM buffer ≈ 2.2 s of audio reserve.  Cap the wait so
- * a slow/stingy server (small burst) still starts within a bounded time with
- * whatever reserve it managed to build. */
-#define PREBUFFER_TARGET_PCT   75
+ * New design: never touch the sink.  Pause the *decoder* after audio_pipeline_run()
+ * so http_stream fills its 512 KB compressed output ring (http.out_rb) from the
+ * server's burst-on-connect.  Unlike PCM, the compressed buffer DOES self-heal:
+ * its consumer (the decoder) is rate-locked to real-time, so an inter-chunk gap
+ * drains it and the server's post-gap burst refills it.  A full http.out_rb is a
+ * ~30 s reserve that rides through WiFi sleep windows and Icecast gaps.  The sink
+ * streams a brief startup silence while we fill, then plays continuously.
+ *
+ * Target 80% of http.out_rb.  Cap the wait so a stingy burst-on-connect still
+ * starts within a bounded time with whatever reserve it managed to build. */
+#define PREBUFFER_TARGET_PCT   80
 #define PREBUFFER_TIMEOUT_MS   8000
 #define PREBUFFER_POLL_MS      50
 
@@ -468,50 +475,51 @@ static esp_err_t probe_rate_locked(const char *url, int *out_rate, int *out_ch)
  * prebuffered) playback rather than blocking the stream. */
 static void prebuffer_locked(void)
 {
-    if (!s_a2dp_el || !s_resample_el) return;
+    if (!s_http_el || !s_decoder_el) return;
 
-    ringbuf_handle_t rsp_rb = audio_element_get_output_ringbuf(s_resample_el);
-    if (!rsp_rb) return;
-    int rb_size = rb_get_size(rsp_rb);
+    /* Fill http.out_rb (compressed) — the self-healing reserve.  We gate on the
+     * decoder's input ring, which IS http_stream's output ring. */
+    ringbuf_handle_t http_rb = audio_element_get_output_ringbuf(s_http_el);
+    if (!http_rb) return;
+    int rb_size = rb_get_size(http_rb);
     if (rb_size <= 0) return;
     int target = (rb_size * PREBUFFER_TARGET_PCT) / 100;
 
-    /* Wait briefly for the a2dp task to reach RUNNING before pausing.  Pausing an
-     * element still in INIT can be a no-op, after which it would transition to
-     * RUNNING and start draining.  The BT data callback gates on AEL_STATE_RUNNING,
-     * so until the element is RUNNING nothing drains anyway — but we must land the
-     * pause once it IS running.  Bounded wait so a stuck element can't hang us. */
+    /* Wait briefly for the decoder task to reach RUNNING before pausing.  Pausing
+     * an element still in INIT can be a no-op, after which it would transition to
+     * RUNNING and start draining http.out_rb.  Bounded wait so a stuck element
+     * can't hang us. */
     int64_t run_deadline = esp_timer_get_time() + 500 * 1000;  /* 500 ms */
-    while (audio_element_get_state(s_a2dp_el) != AEL_STATE_RUNNING &&
+    while (audio_element_get_state(s_decoder_el) != AEL_STATE_RUNNING &&
            esp_timer_get_time() < run_deadline) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    if (audio_element_pause(s_a2dp_el) != ESP_OK) {
-        ESP_LOGW(TAG, "Prebuffer: a2dp pause failed — starting without prebuffer");
+    if (audio_element_pause(s_decoder_el) != ESP_OK) {
+        ESP_LOGW(TAG, "Prebuffer: decoder pause failed — starting without prebuffer");
         return;
     }
 
     int64_t deadline = esp_timer_get_time() + (int64_t)PREBUFFER_TIMEOUT_MS * 1000;
     int filled = 0;
     while (esp_timer_get_time() < deadline) {
-        filled = rb_bytes_filled(rsp_rb);
+        filled = rb_bytes_filled(http_rb);
         if (filled >= target) break;
-        /* Abort early if the source died (decoder/http errored) — no point
-         * waiting out the full timeout for a reserve that will never build. */
-        if (audio_element_get_state(s_http_el) == AEL_STATE_ERROR ||
-            audio_element_get_state(s_decoder_el) == AEL_STATE_ERROR) {
-            ESP_LOGW(TAG, "Prebuffer: upstream error — resuming sink early");
+        /* Abort early if http_stream died — no point waiting out the full timeout
+         * for a reserve that will never build. */
+        if (audio_element_get_state(s_http_el) == AEL_STATE_ERROR) {
+            ESP_LOGW(TAG, "Prebuffer: http error — resuming decoder early");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(PREBUFFER_POLL_MS));
     }
 
-    ESP_LOGI(TAG, "Prebuffer: primed %d/%d bytes (%d%%) — resuming a2dp sink",
+    ESP_LOGI(TAG, "Prebuffer: primed http.out_rb %d/%d bytes (%d%%) — resuming decoder",
              filled, rb_size, rb_size > 0 ? (filled * 100 / rb_size) : -1);
-    /* threshold 0: the input ring (rsp.out_rb) is already primed, so resume
-     * immediately; finite timeout guards against an unexpected internal wait. */
-    audio_element_resume(s_a2dp_el, 0, pdMS_TO_TICKS(2000));
+    /* threshold 0: the input ring (http.out_rb) is already primed, so resume
+     * immediately; finite timeout guards against an unexpected internal wait.
+     * The a2dp sink was never paused — no resume glitch, no catch-up is_cong. */
+    audio_element_resume(s_decoder_el, 0, pdMS_TO_TICKS(2000));
 }
 
 static esp_err_t start_station_locked(const char *url)
@@ -593,9 +601,8 @@ static esp_err_t start_station_locked(const char *url)
         return ret;
     }
 
-    /* Prime the PCM jitter buffer before the sink starts draining — see
-     * prebuffer_locked().  Without this, rsp.out_rb stays at 0% for the whole
-     * session and every WiFi/server gap starves the sink. */
+    /* Prime the compressed reserve (http.out_rb) before the decoder starts
+     * draining it — see prebuffer_locked().  The a2dp sink is never paused. */
     prebuffer_locked();
     return ESP_OK;
 }
@@ -936,15 +943,19 @@ void pipeline_log_diag(void)
      * is starving (chop from underrun); a full one => delivery is fine and the
      * chop is in the content/SBC path; a full dec.out_rb => the resampler is the
      * bottleneck (can't consume decoder output fast enough). */
+    ringbuf_handle_t http_rb = s_http_el ? audio_element_get_output_ringbuf(s_http_el) : NULL;
     ringbuf_handle_t dec_rb = audio_element_get_output_ringbuf(s_decoder_el);
     ringbuf_handle_t rsp_rb = audio_element_get_output_ringbuf(s_resample_el);
+    int http_fill = http_rb ? rb_bytes_filled(http_rb) : -1;
+    int http_size = http_rb ? rb_get_size(http_rb)     : -1;
     int dec_fill = dec_rb ? rb_bytes_filled(dec_rb) : -1;
     int dec_size = dec_rb ? rb_get_size(dec_rb)     : -1;
     int rsp_fill = rsp_rb ? rb_bytes_filled(rsp_rb) : -1;
     int rsp_size = rsp_rb ? rb_get_size(rsp_rb)     : -1;
 
-    ESP_LOGI(TAG, "DIAG dec=%dHz/%dch  throughput=%" PRIu32 "KB/s  dec_rb=%d/%d  rsp_rb=%d/%d (%d%%)",
+    ESP_LOGI(TAG, "DIAG dec=%dHz/%dch  throughput=%" PRIu32 "KB/s  http_rb=%d/%d (%d%%)  dec_rb=%d/%d  rsp_rb=%d/%d (%d%%)",
              dai.sample_rates, dai.channels, kbps,
+             http_fill, http_size, http_size > 0 ? (http_fill * 100 / http_size) : -1,
              dec_fill, dec_size, rsp_fill, rsp_size,
              rsp_size > 0 ? (rsp_fill * 100 / rsp_size) : -1);
 }
